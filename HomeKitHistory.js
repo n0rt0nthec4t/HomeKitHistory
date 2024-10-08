@@ -361,7 +361,11 @@ export default class HomeKitHistory {
       // Update types we have in history. This will just be the main type and its latest location in history
       let typeIndex = this.historyData.types.findIndex((type) => type.type === historyEntry.type && type.sub === historyEntry.sub);
       if (typeIndex === -1) {
-        this.historyData.types.push({ type: historyEntry.type, sub: historyEntry.sub, lastEntry: this.historyData.next - 1 });
+        this.historyData.types.push({
+          type: historyEntry.type,
+          sub: historyEntry.sub,
+          lastEntry: this.historyData.next - 1,
+        });
       } else {
         this.historyData.types[typeIndex].lastEntry = this.historyData.next - 1;
       }
@@ -428,7 +432,10 @@ export default class HomeKitHistory {
     // we get all the data for the service, ignoring the specific subtypes
     let tempHistory = this.getHistory(service, null); // all history
     if (tempHistory.length !== 0) {
-      let writer = fs.createWriteStream(csvfile, { flags: 'w', autoClose: 'true' });
+      let writer = fs.createWriteStream(csvfile, {
+        flags: 'w',
+        autoClose: 'true',
+      });
       if (writer !== null) {
         // write header, we'll use the first record keys for the header keys
         let header = 'time,subtype';
@@ -501,7 +508,11 @@ export default class HomeKitHistory {
             (typeof type.sub === 'undefined' && type.type === this.historyData.data[index].type),
         ) === -1
       ) {
-        this.historyData.types.push({ type: this.historyData.data[index].type, sub: this.historyData.data[index].sub, lastEntry: index });
+        this.historyData.types.push({
+          type: this.historyData.data[index].type,
+          sub: this.historyData.data[index].sub,
+          lastEntry: index,
+        });
       }
     }
   }
@@ -566,7 +577,9 @@ export default class HomeKitHistory {
 
         // Setup callbacks for characteristics
         service.getCharacteristic(this.hap.Characteristic.EveTimesOpened).onGet(() => {
-          return this.entryCount(this.EveHome.type, this.EveHome.sub, { status: 1 }); // Count of entries based upon status = 1, opened
+          return this.entryCount(this.EveHome.type, this.EveHome.sub, {
+            status: 1,
+          }); // Count of entries based upon status = 1, opened
         });
 
         service.getCharacteristic(this.hap.Characteristic.EveLastActivation).onGet(() => {
@@ -834,7 +847,10 @@ export default class HomeKitHistory {
                 //let nowTemp = valHex.substr(index, 2) === '80' ? null : parseInt(valHex.substr(index, 2), 16) * 0.5;
                 let ecoTemp = valHex.substr(index + 2, 2) === '80' ? null : parseInt(valHex.substr(index + 2, 2), 16) * 0.5;
                 let comfortTemp = valHex.substr(index + 4, 2) === '80' ? null : parseInt(valHex.substr(index + 4, 2), 16) * 0.5;
-                processedData.scheduleTemps = { eco: ecoTemp, comfort: comfortTemp };
+                processedData.scheduleTemps = {
+                  eco: ecoTemp,
+                  comfort: comfortTemp,
+                };
                 index += 6;
                 break;
               }
@@ -883,7 +899,11 @@ export default class HomeKitHistory {
                     }
                     index += 4;
                   }
-                  programs.push({ id: programs.length + 1, days: DAYSOFWEEK[index2], schedule: times });
+                  programs.push({
+                    id: programs.length + 1,
+                    days: DAYSOFWEEK[index2],
+                    schedule: times,
+                  });
                 }
 
                 this.EveThermoPersist.programs = programs;
@@ -1442,7 +1462,11 @@ export default class HomeKitHistory {
                         offset: start_offset,
                       });
                     }
-                    programs.push({ id: programs.length + 1, days: [], schedule: times });
+                    programs.push({
+                      id: programs.length + 1,
+                      days: [],
+                      schedule: times,
+                    });
                   }
                   index2 = index2 + 4 + scheduleSize; // Move to next program
                 }
