@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 29/8/2024
+// Version 14/10/2024
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -545,7 +545,7 @@ export default class HomeKitHistory {
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
           this.hap.Characteristic.EveLastActivation,
-          this.hap.Characteristic.EveOpenDuration,
+          this.hap.Characteristic.EveOpenedDuration,
           this.hap.Characteristic.EveTimesOpened,
         ]);
 
