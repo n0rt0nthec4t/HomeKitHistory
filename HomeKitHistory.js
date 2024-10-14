@@ -386,44 +386,36 @@ export default class HomeKitHistory {
     // returns a JSON object of all history for this service and subtype
     // handles if we've rolled over history also
     let tempHistory = [];
-    let findUUID = null;
-    let findSub = null;
-    if (typeof subtype !== 'undefined' && subtype !== null) {
-      findSub = subtype;
+    if (specifickey === undefined) {
+      specifickey = {};
     }
-    if (typeof service !== 'object') {
+
+    if (service !== undefined && service !== '') {
       // passed in UUID byself, rather than service object
-      findUUID = service;
+      specifickey.type = service;
     }
-    if (typeof service?.UUID === 'string') {
-      findUUID = service.UUID;
+
+    if (service?.UUID !== undefined && service.UUID !== '') {
+      specifickey.type = service.UUID;
     }
-    if (typeof service.subtype === 'undefined' && typeof subtype === 'undefined') {
-      findSub = 0;
+
+    if (service?.subtype === undefined && typeof subtype === undefined) {
+      specifickey.sub = subtype;
     }
-    tempHistory = tempHistory.concat(
-      this.historyData.data.slice(this.historyData.next, this.historyData.data.length),
-      this.historyData.data.slice(0, this.historyData.next),
-    );
-    tempHistory = tempHistory.filter((historyEntry) => {
-      if (typeof specifickey === 'object' && Object.keys(specifickey).length === 1) {
-        // limit entry to a specifc key type value if specified
-        if (
-          (findSub === null && historyEntry.type === findUUID && historyEntry[Object.keys(specifickey)] === Object.values(specifickey)) ||
-          (findSub !== null &&
-            historyEntry.type === findUUID &&
-            historyEntry.sub === findSub &&
-            historyEntry[Object.keys(specifickey)] === Object.values(specifickey))
-        ) {
-          return historyEntry;
-        }
-      } else if (
-        (findSub === null && historyEntry.type === findUUID) ||
-        (findSub !== null && historyEntry.type === findUUID && historyEntry.sub === findSub)
-      ) {
-        return historyEntry;
-      }
-    });
+
+    if (subtype !== undefined && subtype !== null) {
+      specifickey.sub = subtype;
+    }
+
+    tempHistory = tempHistory
+      .concat(
+        this.historyData.data.slice(this.historyData.next, this.historyData.data.length),
+        this.historyData.data.slice(0, this.historyData.next),
+      )
+      .filter((historyEntry) => {
+        return Object.entries(specifickey).every(([key, value]) => historyEntry[key] === value);
+      });
+
     return tempHistory;
   }
 
@@ -572,14 +564,13 @@ export default class HomeKitHistory {
         service.updateCharacteristic(
           this.hap.Characteristic.EveTimesOpened,
           this.entryCount(this.EveHome.type, this.EveHome.sub, { status: 1 }),
-        ); // Count of entries based upon status = 1, opened
+        );
         service.updateCharacteristic(this.hap.Characteristic.EveLastActivation, this.#EveLastEventTime());
 
         // Setup callbacks for characteristics
         service.getCharacteristic(this.hap.Characteristic.EveTimesOpened).onGet(() => {
-          return this.entryCount(this.EveHome.type, this.EveHome.sub, {
-            status: 1,
-          }); // Count of entries based upon status = 1, opened
+          // Count of entries based upon status = 1, opened
+          return this.entryCount(this.EveHome.type, this.EveHome.sub, { status: 1 });
         });
 
         service.getCharacteristic(this.hap.Characteristic.EveLastActivation).onGet(() => {
