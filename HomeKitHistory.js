@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 14/10/2024
+// Version 15/10/2024
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -456,27 +456,8 @@ export default class HomeKitHistory {
 
   lastHistory(service, subtype) {
     // returns the last history event for this service type and subtype
-    let findUUID = null;
-    let findSub = null;
-    if (typeof subtype !== 'undefined') {
-      findSub = subtype;
-    }
-    if (typeof service !== 'object') {
-      // passed in UUID byself, rather than service object
-      findUUID = service;
-    }
-    if (typeof service?.UUID === 'string') {
-      findUUID = service.UUID;
-    }
-    if (typeof service.subtype === 'undefined' && typeof subtype === 'undefined') {
-      findSub = 0;
-    }
-
-    // If subtype is 'null' find newest event based on time
-    let typeIndex = this.historyData.types.findIndex(
-      (type) => (type.type === findUUID && type.sub === findSub && subtype !== null) || (type.type === findUUID && subtype === null),
-    );
-    return typeIndex !== -1 ? this.historyData.data[this.historyData.types[typeIndex].lastEntry] : null;
+    let lastHistory = this.getHistory(service, subtype);
+    return lastHistory.length > 0 ? lastHistory?.[lastHistory.length - 1] : undefined;
   }
 
   entryCount(service, subtype, specifickey) {
@@ -1771,7 +1752,7 @@ export default class HomeKitHistory {
     // calculate time in seconds since first event to last event. If no history we'll use the current time as the last event time
     let historyEntry = this.lastHistory(this.EveHome.type, this.EveHome.sub);
     let lastTime = Math.floor(Date.now() / 1000) - (this.EveHome.reftime + EPOCH_OFFSET);
-    if (historyEntry && Object.keys(historyEntry).length !== 0) {
+    if (isNaN(historyEntry?.time) === false) {
       lastTime -= Math.floor(Date.now() / 1000) - historyEntry.time;
     }
     return lastTime;
