@@ -2255,7 +2255,7 @@ export default class HomeKitHistory {
                 '%s %s %s',
                 numberToEveHexString(parseInt('11', 2), 2), // Field include/exclude mask
                 numberToEveHexString(historyEntry.watts * 10, 4), // Power in watts
-                numberToEveHexString(historyEntry.status, 2),  // Power status, 1 = on, 0 = off
+                numberToEveHexString(historyEntry.status, 2), // Power status, 1 = on, 0 = off
               );
               break;
             }
