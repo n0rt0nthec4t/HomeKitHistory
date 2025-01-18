@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 15/10/2024
+// Version 2025/18/01
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -1169,7 +1169,7 @@ export default class HomeKitHistory {
           firmware: typeof options?.EveSmoke_firmware === 'number' ? options.EveSmoke_firmware : 1208, // Firmware version
           lastalarmtest: typeof options?.EveSmoke_lastalarmtest === 'number' ? options.EveSmoke_lastalarmtest : 0, // Seconds of alarm test
           alarmtest: options?.EveSmoke_alarmtest === true, // Is alarmtest running
-          heatstatus: typeof options?.EveSmoke_heatstatus === 'number' ? options.EveSmoke_heatstatus : 0, // Heat sensor status
+          heatstatus: options.EveSmoke_heatstatus === true, // Heat sensor status
           statusled: options?.EveSmoke_statusled === false, // Status LED flash/enabled
           smoketestpassed: options?.EveSmoke_smoketestpassed === false, // Passed smoke test?
           heattestpassed: options?.EveSmoke_heattestpassed === false, // Passed smoke test?
@@ -2009,7 +2009,7 @@ export default class HomeKitHistory {
       ) {
         value |= 1 << 0; // 1st bit, smoke detected
       }
-      if (this.EveSmokePersist.heatstatus !== 0) {
+      if (this.EveSmokePersist.heatstatus === true) {
         value |= 1 << 1; // 2th bit - heat detected
       }
       if (this.EveSmokePersist.alarmtest === true) {
