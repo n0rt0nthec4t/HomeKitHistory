@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2025/18/01
+// Version 2025/01/18
 // Mark Hulskamp
 
 // Define nodejs module requirements
