@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2025/01/18
+// Version 2025/06/16
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -23,280 +23,250 @@ import fs from 'fs';
 const MAX_HISTORY_SIZE = 16384; // 16k entries
 const EPOCH_OFFSET = 978307200; // Seconds since 1/1/1970 to 1/1/2001
 const EVEHOME_MAX_STREAM = 11; // Maximum number of history events we can stream to EveHome
-const DAYSOFWEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const DAYS_OF_WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const EMPTY_SCHEDULE = 'ffffffffffffffff';
+const LOG_LEVELS = {
+  INFO: 'info',
+  SUCCESS: 'success',
+  WARN: 'warn',
+  ERROR: 'error',
+  DEBUG: 'debug',
+};
 
 // Create the history object
 export default class HomeKitHistory {
+  historyData = {}; // Tracked history data via persistant storage
+  restart = Math.floor(Date.now() / 1000); // time we restarted object or created
+  EveHome = undefined;
+
   accessory = undefined; // Accessory service for this history
   hap = undefined; // HomeKit Accessory Protocol API stub
   log = undefined; // Logging function object
-  maxEntries = MAX_HISTORY_SIZE; // used for rolling history. if 0, means no rollover
-  EveHome = undefined;
 
-  constructor(accessory, log, api, options) {
+  // Internal data only for this class
+  #persistStorage = undefined;
+  #persistKey = undefined;
+  #maxEntries = MAX_HISTORY_SIZE; // used for rolling history. if 0, means no rollover
+
+  // eslint-disable-next-line no-unused-vars
+  constructor(accessory = undefined, api = undefined, log = undefined, eventEmitter = undefined, options = {}) {
     // Validate the passed in logging object. We are expecting certain functions to be present
-    if (
-      typeof log?.info === 'function' &&
-      typeof log?.success === 'function' &&
-      typeof log?.warn === 'function' &&
-      typeof log?.error === 'function' &&
-      typeof log?.debug === 'function'
-    ) {
+    if (Object.values(LOG_LEVELS).every((fn) => typeof log?.[fn] === 'function')) {
       this.log = log;
+    }
+
+    // Get the actual HAP entry point from passed in api object, either Homebridge or HAP-NodeJS
+    this.hap =
+      isNaN(api?.version) === false && typeof api?.hap === 'object' && api?.HAPLibraryVersion === undefined
+        ? api.hap
+        : typeof api?.HAPLibraryVersion === 'function' && api?.version === undefined && api?.hap === undefined
+          ? api
+          : undefined;
+
+    if (this.hap === undefined) {
+      this?.log?.error?.('Missing HAP library API, cannot use class');
+      return;
     }
 
     if (typeof accessory !== 'undefined' && typeof accessory === 'object') {
       this.accessory = accessory;
     }
 
-    if (typeof options === 'object') {
-      if (typeof options?.maxEntries === 'number') {
-        this.maxEntries = options.maxEntries;
-      }
+    if (isNaN(options?.maxEntries) === false) {
+      this.#maxEntries = options.maxEntries;
     }
 
-    // Workout if we're running under HomeBridge or HAP-NodeJS library
-    if (typeof api?.version === 'number' && typeof api?.hap === 'object' && typeof api?.HAPLibraryVersion === 'undefined') {
-      // We have the HomeBridge version number and hap API object
-      this.hap = api.hap;
-    }
-
-    if (typeof api?.HAPLibraryVersion === 'function' && typeof api?.version === 'undefined' && typeof api?.hap === 'undefined') {
-      // As we're missing the HomeBridge entry points but have the HAP library version
-      this.hap = api;
-    }
-
-    // Dynamically create the additional services and characteristics
-    this.#createHomeKitServicesAndCharacteristics();
-
-    // Setup HomeKitHistory using HAP-NodeJS library
+    // Determine the peristant storage file name
     if (typeof accessory?.username !== 'undefined') {
       // Since we have a username for the accessory, we'll assume this is not running under Homebridge
       // We'll use it's persist folder for storing history files
-      this.storageKey = util.format('History.%s.json', accessory.username.replace(/:/g, '').toUpperCase());
+      this.#persistKey = util.format('History.%s.json', accessory.username.replace(/:/g, '').toUpperCase());
     }
 
     // Setup HomeKitHistory under Homebridge
     if (typeof accessory?.username === 'undefined') {
-      this.storageKey = util.format('History.%s.json', accessory.UUID);
+      this.#persistKey = util.format('History.%s.json', accessory.UUID);
     }
 
-    this.storage = this.hap.HAPStorage.storage();
-
-    this.historyData = this.storage.getItem(this.storageKey);
+    // Setup persistant storage and load any data we have already
+    this.#persistStorage = this.hap.HAPStorage.storage();
+    this.historyData = this.#persistStorage.getItem(this.#persistKey);
     if (typeof this.historyData !== 'object') {
       // Getting storage key didnt return an object, we'll assume no history present, so start new history for this accessory
       this.resetHistory(); // Start with blank history
     }
 
-    this.restart = Math.floor(Date.now() / 1000); // time we restarted
-
     // perform rollover if needed when starting service
-    if (this.maxEntries !== 0 && this.historyData.next >= this.maxEntries) {
+    if (this.#maxEntries !== 0 && this.historyData.next >= this.#maxEntries) {
       this.rolloverHistory();
     }
+
+    // Dynamically create the additional services and characteristics
+    this.#createHomeKitServicesAndCharacteristics();
   }
 
   // Class functions
   addHistory(service, entry, timegap) {
+    if (typeof service !== 'object' || typeof service.UUID !== 'string' || typeof entry !== 'object') {
+      return;
+    }
+
     // we'll use the service or characteristic UUID to determine the history entry time and data we'll add
     // reformat the entry object to order the fields consistantly in the output
     // Add new history types in the switch statement
     let historyEntry = {};
-    if (this.restart !== null && typeof entry.restart === 'undefined') {
+
+    if (isNaN(this.restart) === false && typeof entry?.restart === 'undefined') {
       // Object recently created, so log the time restarted our history service
       entry.restart = this.restart;
-      this.restart = null;
+      this.restart = undefined;
     }
-    if (typeof entry.time === 'undefined') {
+    if (isNaN(entry?.time) === true) {
       // No logging time was passed in, so set
       entry.time = Math.floor(Date.now() / 1000);
     }
-    if (typeof service.subtype === 'undefined') {
+    if (typeof service?.subtype === 'undefined') {
       service.subtype = 0;
     }
-    if (typeof timegap === 'undefined') {
+    if (isNaN(timegap) === true) {
       timegap = 0; // Zero minimum time gap between entries
     }
-    switch (service.UUID) {
-      case this.hap.Service.GarageDoorOpener.UUID: {
-        // Garage door history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = closed, 1 = open
-        historyEntry.status = entry.status;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (isNaN(entry?.restart) === false) {
+      historyEntry.restart = entry.restart;
+    }
 
-      case this.hap.Service.MotionSensor.UUID: {
-        // Motion sensor history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = motion cleared, 1 = motion detected
-        historyEntry.status = entry.status;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.GarageDoorOpener.UUID) {
+      // Garage door history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = closed, 1 = open
+      historyEntry.status = entry.status;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Service.Window.UUID:
-      case this.hap.Service.WindowCovering.UUID: {
-        // Window and Window Covering history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = closed, 1 = open
-        // entry.position => position in % 0% = closed 100% fully open
-        historyEntry.status = entry.status;
-        historyEntry.position = entry.position;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.MotionSensor.UUID) {
+      // Motion sensor history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = motion cleared, 1 = motion detected
+      historyEntry.status = entry.status;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Service.HeaterCooler.UUID:
-      case this.hap.Service.Thermostat.UUID: {
-        // Thermostat and Heater/Cooler history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = off, 1 = fan, 2 = heating, 3 = cooling, 4 = dehumidifying
-        // entry.temperature  => current temperature in degress C
-        // entry.target => {low, high} = cooling limit, heating limit
-        // entry.humidity => current humidity
-        historyEntry.status = entry.status;
-        historyEntry.temperature = entry.temperature;
-        historyEntry.target = entry.target;
-        historyEntry.humidity = entry.humidity;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.Window.UUID || service.UUID === this.hap.Service.WindowCovering.UUID) {
+      // Window and Window Covering history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = closed, 1 = open
+      // entry.position => position in % 0% = closed 100% fully open
+      historyEntry.status = entry.status;
+      historyEntry.position = entry.position;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Service.EveAirPressureSensor.UUID:
-      case this.hap.Service.AirQualitySensor.UUID:
-      case this.hap.Service.TemperatureSensor.UUID: {
-        // Temperature sensor history
-        // entry.time => unix time in seconds
-        // entry.temperature => current temperature in degress C
-        // entry.humidity => current humidity
-        // optional (entry.ppm)
-        // optional (entry.voc => current VOC measurement in ppb)\
-        // optional (entry.pressure -> in hpa)
-        historyEntry.temperature = entry.temperature;
-        if (typeof entry.humidity === 'undefined') {
-          // fill out humidity if missing
-          entry.humidity = 0;
-        }
-        if (typeof entry.ppm === 'undefined') {
-          // fill out ppm if missing
-          entry.ppm = 0;
-        }
-        if (typeof entry.voc === 'undefined') {
-          // fill out voc if missing
-          entry.voc = 0;
-        }
-        if (typeof entry.pressure === 'undefined') {
-          // fill out pressure if missing
-          entry.pressure = 0;
-        }
-        historyEntry.temperature = entry.temperature;
-        historyEntry.humidity = entry.humidity;
-        historyEntry.ppm = entry.ppm;
-        historyEntry.voc = entry.voc;
-        historyEntry.pressure = entry.pressure;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.HeaterCooler.UUID || service.UUID === this.hap.Service.Thermostat.UUID) {
+      // Thermostat and Heater/Cooler history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = off, 1 = fan, 2 = heating, 3 = cooling, 4 = dehumidifying
+      // entry.temperature  => current temperature in degress C
+      // entry.target => {low, high} = cooling limit, heating limit
+      // entry.humidity => current humidity
+      historyEntry.status = entry.status;
+      historyEntry.temperature = entry.temperature;
+      historyEntry.target = entry.target;
+      historyEntry.humidity = entry.humidity;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Service.Valve.UUID: {
-        // Water valve history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = valve closed, 1 = valve opened
-        // entry.water => amount of water in L's
-        // entry.duration => time for water amount
-        historyEntry.status = entry.status;
-        historyEntry.water = entry.water;
-        historyEntry.duration = entry.duration;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
+    if (
+      service.UUID === this.hap.Service.EveAirPressureSensor.UUID ||
+      service.UUID === this.hap.Service.AirQualitySensor.UUID ||
+      service.UUID === this.hap.Service.TemperatureSensor.UUID
+    ) {
+      // Temperature sensor history
+      // entry.time => unix time in seconds
+      // entry.temperature => current temperature in degress C
+      // entry.humidity => current humidity
+      // optional (entry.ppm)
+      // optional (entry.voc => current VOC measurement in ppb)
+      // optional (entry.pressure -> in hpa)
+      if (typeof entry.humidity === 'undefined') {
+        // fill out humidity if missing
+        entry.humidity = 0;
       }
+      if (typeof entry.ppm === 'undefined') {
+        // fill out ppm if missing
+        entry.ppm = 0;
+      }
+      if (typeof entry.voc === 'undefined') {
+        // fill out voc if missing
+        entry.voc = 0;
+      }
+      if (typeof entry.pressure === 'undefined') {
+        // fill out pressure if missing
+        entry.pressure = 0;
+      }
+      historyEntry.temperature = entry.temperature;
+      historyEntry.humidity = entry.humidity;
+      historyEntry.ppm = entry.ppm;
+      historyEntry.voc = entry.voc;
+      historyEntry.pressure = entry.pressure;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Characteristic.WaterLevel.UUID: {
-        // Water level history
-        // entry.time => unix time in seconds
-        // entry.level => water level as percentage
-        historyEntry.level = entry.level;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, 0, entry.time, timegap, historyEntry); // Characteristics don't have sub type, so we'll use 0 for it
-        break;
-      }
+    if (service.UUID === this.hap.Service.Valve.UUID) {
+      // Water valve history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = valve closed, 1 = valve opened
+      // entry.water => amount of water in L's
+      // entry.duration => time for water amount
+      historyEntry.status = entry.status;
+      historyEntry.water = entry.water;
+      historyEntry.duration = entry.duration;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Service.LeakSensor.UUID: {
-        // Leak sensor history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = no leak, 1 = leak
-        historyEntry.status = entry.status;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, 0, entry.time, timegap, historyEntry); // Characteristics don't have sub type, so we'll use 0 for it
-        break;
-      }
+    if (service.UUID === this.hap.Characteristic.WaterLevel.UUID) {
+      // Water level history
+      // entry.time => unix time in seconds
+      // entry.level => water level as percentage
+      historyEntry.level = entry.level;
+      this.#addEntry(service.UUID, 0, entry.time, timegap, historyEntry); // Characteristics don't have sub type, so we'll use 0 for it
+    }
 
-      case this.hap.Service.Outlet.UUID: {
-        // Power outlet history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = off, 1 = on
-        // entry.volts  => voltage in Vs
-        // entry.watts  => watts in W's
-        // entry.amps  => current in A's
-        historyEntry.status = entry.status;
-        historyEntry.volts = entry.volts;
-        historyEntry.watts = entry.watts;
-        historyEntry.amps = entry.amps;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.LeakSensor.UUID) {
+      // Leak sensor history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = no leak, 1 = leak
+      historyEntry.status = entry.status;
+      this.#addEntry(service.UUID, 0, entry.time, timegap, historyEntry); // Characteristics don't have sub type, so we'll use 0 for it
+    }
 
-      case this.hap.Service.Doorbell.UUID: {
-        // Doorbell press history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = not pressed, 1 = doorbell pressed
-        historyEntry.status = entry.status;
-        if (typeof entry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.Outlet.UUID) {
+      // Power outlet history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = off, 1 = on
+      // entry.volts  => voltage in Vs
+      // entry.watts  => watts in W's
+      // entry.amps  => current in A's
+      historyEntry.status = entry.status;
+      historyEntry.volts = entry.volts;
+      historyEntry.watts = entry.watts;
+      historyEntry.amps = entry.amps;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
 
-      case this.hap.Service.SmokeSensor.UUID: {
-        // Smoke sensor history
-        // entry.time => unix time in seconds
-        // entry.status => 0 = smoke cleared, 1 = smoke detected
-        historyEntry.status = entry.status;
-        if (typeof historyEntry.restart !== 'undefined') {
-          historyEntry.restart = entry.restart;
-        }
-        this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-        break;
-      }
+    if (service.UUID === this.hap.Service.Doorbell.UUID) {
+      // Doorbell press history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = not pressed, 1 = doorbell pressed
+      historyEntry.status = entry.status;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
+    }
+
+    if (service.UUID === this.hap.Service.SmokeSensor.UUID) {
+      // Smoke sensor history
+      // entry.time => unix time in seconds
+      // entry.status => 0 = smoke cleared, 1 = smoke detected
+      historyEntry.status = entry.status;
+      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
     }
   }
 
@@ -308,42 +278,41 @@ export default class HomeKitHistory {
     this.historyData.next = 0; // next entry for history is at start
     this.historyData.types = []; // no service types in history
     this.historyData.data = []; // no history data
-    this.storage.setItem(this.storageKey, this.historyData);
+    this.#persistStorage.setItem(this.#persistKey, this.historyData);
   }
 
   rolloverHistory() {
     // Roll history over and start from zero.
     // We'll include an entry as to when the rollover took place
     // remove all history data after the rollover entry
-    this.historyData.data.splice(this.maxEntries, this.historyData.data.length);
+    this.historyData.data.splice(this.#maxEntries, this.historyData.data.length);
     this.historyData.rollover = Math.floor(Date.now() / 1000);
     this.historyData.next = 0;
     this.#updateHistoryTypes();
-    this.storage.setItem(this.storageKey, this.historyData);
+    this.#persistStorage.setItem(this.#persistKey, this.historyData);
   }
 
   #addEntry(type, sub, time, timegap, entry) {
     let historyEntry = {};
     let recordEntry = true; // always record entry unless we don't need to
+
     historyEntry.time = time;
     historyEntry.type = type;
     historyEntry.sub = sub;
+
+    // Filter out reserved keys
     Object.entries(entry).forEach(([key, value]) => {
-      if (key !== 'time' || key !== 'type' || key !== 'sub') {
-        // Filer out events we want to control
+      if (key !== 'time' && key !== 'type' && key !== 'sub') {
         historyEntry[key] = value;
       }
     });
 
     // If we have a minimum time gap specified, find the last time entry for this type and if less than min gap, ignore
     if (timegap !== 0) {
-      let typeIndex = this.historyData.types.findIndex((type) => type.type === historyEntry.type && type.sub === historyEntry.sub);
-      if (
-        typeIndex >= 0 &&
-        time - this.historyData.data[this.historyData.types[typeIndex].lastEntry].time < timegap &&
-        typeof historyEntry.restart === 'undefined'
-      ) {
-        // time between last recorded entry and new entry is less than minimum gap and its not a 'restart' entry
+      let typeIndex = this.historyData.types.findIndex((t) => t.type === type && t.sub === sub);
+      let entryTime = this.historyData.data?.[this.historyData.types?.[typeIndex]?.lastEntry]?.time;
+      if (typeIndex >= 0 && typeof entryTime === 'number' && time - entryTime < timegap && typeof historyEntry.restart === 'undefined') {
+        // time between last recorded entry and new entry is less than minimum gap and it's not a 'restart' entry
         // so don't log it
         recordEntry = false;
       }
@@ -351,34 +320,30 @@ export default class HomeKitHistory {
 
     if (recordEntry === true) {
       // Work out where this goes in the history data array
-      if (this.maxEntries !== 0 && this.historyData.next >= this.maxEntries) {
+      if (this.#maxEntries !== 0 && this.historyData.next >= this.#maxEntries) {
         // roll over history data as we've reached the defined max entry size
         this.rolloverHistory();
       }
-      this.historyData.data[this.historyData.next] = historyEntry;
+
+      let entryIndex = this.historyData.next;
+      this.historyData.data[entryIndex] = historyEntry;
       this.historyData.next++;
 
       // Update types we have in history. This will just be the main type and its latest location in history
-      let typeIndex = this.historyData.types.findIndex((type) => type.type === historyEntry.type && type.sub === historyEntry.sub);
+      let typeIndex = this.historyData.types.findIndex((t) => t.type === type && t.sub === sub);
       if (typeIndex === -1) {
-        this.historyData.types.push({
-          type: historyEntry.type,
-          sub: historyEntry.sub,
-          lastEntry: this.historyData.next - 1,
-        });
+        this.historyData.types.push({ type: type, sub: sub, lastEntry: entryIndex });
       } else {
-        this.historyData.types[typeIndex].lastEntry = this.historyData.next - 1;
+        this.historyData.types[typeIndex].lastEntry = entryIndex;
       }
 
       // Validate types last entries. Helps with rolled over data etc. If we cannot find the type anymore, remove from known types
-      this.historyData.types.forEach((typeEntry, index) => {
-        if (this.historyData.data[typeEntry.lastEntry].type !== typeEntry.type) {
-          // not found, so remove from known types
-          this.historyData.types.splice(index, 1);
-        }
+      this.historyData.types = this.historyData.types.filter((typeEntry) => {
+        return this.historyData.data[typeEntry?.lastEntry]?.type === typeEntry.type;
       });
 
-      this.storage.setItem(this.storageKey, this.historyData); // Save to persistent storage
+      // Save to persistent storage
+      this.#persistStorage.setItem(this.#persistKey, this.historyData);
     }
   }
 
@@ -658,7 +623,7 @@ export default class HomeKitHistory {
               }
 
               default: {
-                this?.log?.debug && this.log.debug('Unknown Eve MotionBlinds command "%s" with data "%s"', command, data);
+                this?.log?.debug?.('Unknown Eve MotionBlinds command "%s" with data "%s"', command, data);
                 break;
               }
             }
@@ -873,7 +838,7 @@ export default class HomeKitHistory {
                   }
                   programs.push({
                     id: programs.length + 1,
-                    days: DAYSOFWEEK[index2],
+                    days: DAYS_OF_WEEK[index2],
                     schedule: times,
                   });
                 }
@@ -908,7 +873,7 @@ export default class HomeKitHistory {
               }
 
               default: {
-                this?.log?.debug && this.log.debug('Unknown Eve Thermo command "%s"', command);
+                this?.log?.debug?.('Unknown Eve Thermo command "%s"', command);
                 break;
               }
             }
@@ -1121,7 +1086,7 @@ export default class HomeKitHistory {
                             }
 
                             default : {
-                                this?.log?.debug && this.log.debug('Unknown Eve Motion command "%s" with data "%s"', command, data);
+                                this?.log?.debug?.('Unknown Eve Motion command "%s" with data "%s"', command, data);
                                 break;
                             }
                         }
@@ -1218,13 +1183,13 @@ export default class HomeKitHistory {
                   processedData.statusled = this.EveSmokePersist.statusled;
                 }
                 if (subCommand !== 0x02 && subCommand !== 0x05) {
-                  this?.log?.debug && this.log.debug('Unknown Eve Smoke command "%s" with data "%s"', command, data);
+                  this?.log?.debug?.('Unknown Eve Smoke command "%s" with data "%s"', command, data);
                 }
                 break;
               }
 
               default: {
-                this?.log?.debug && this.log.debug('Unknown Eve Smoke command "%s" with data "%s"', command, data);
+                this?.log?.debug?.('Unknown Eve Smoke command "%s" with data "%s"', command, data);
                 break;
               }
             }
@@ -1460,9 +1425,9 @@ export default class HomeKitHistory {
                 //let unknown = EveHexStringToNumber(data.substr(0, 6));   // Unknown data for first 6 bytes
                 let daysbitmask = EveHexStringToNumber(data.substr(8, 6)) >>> 4;
                 programs.forEach((program) => {
-                  for (let index2 = 0; index2 < DAYSOFWEEK.length; index2++) {
+                  for (let index2 = 0; index2 < DAYS_OF_WEEK.length; index2++) {
                     if (((daysbitmask >>> (index2 * 3)) & 0x7) === program.id) {
-                      program.days.push(DAYSOFWEEK[index2]);
+                      program.days.push(DAYS_OF_WEEK[index2]);
                     }
                   }
                 });
@@ -1498,7 +1463,7 @@ export default class HomeKitHistory {
               }
 
               default: {
-                this?.log?.debug && this.log.debug('Unknown Eve Aqua command "%s" with data "%s"', command, data);
+                this?.log?.debug?.('Unknown Eve Aqua command "%s" with data "%s"', command, data);
                 break;
               }
             }
@@ -1666,7 +1631,7 @@ export default class HomeKitHistory {
               }
 
               default: {
-                this?.log?.debug && this.log.debug('Unknown Eve Water Guard command "%s" with data "%s"', command, data);
+                this?.log?.debug?.('Unknown Eve Water Guard command "%s" with data "%s"', command, data);
                 break;
               }
             }
@@ -1801,8 +1766,7 @@ export default class HomeKitHistory {
     // Encode program schedule and temperatures
     // f4 = temps
     // fa = schedule
-    const EMPTYSCHEDULE = 'ffffffffffffffff';
-    let encodedSchedule = [EMPTYSCHEDULE, EMPTYSCHEDULE, EMPTYSCHEDULE, EMPTYSCHEDULE, EMPTYSCHEDULE, EMPTYSCHEDULE, EMPTYSCHEDULE];
+    let encodedSchedule = [EMPTY_SCHEDULE, EMPTY_SCHEDULE, EMPTY_SCHEDULE, EMPTY_SCHEDULE, EMPTY_SCHEDULE, EMPTY_SCHEDULE, EMPTY_SCHEDULE];
     let encodedTemperatures = '0000';
     if (typeof this.EveThermoPersist.programs === 'object') {
       let tempTemperatures = [];
@@ -1815,8 +1779,8 @@ export default class HomeKitHistory {
             numberToEveHexString(Math.round((time.start + time.duration) / 600), 2);
           tempTemperatures.push(time.ecotemp, time.comforttemp);
         });
-        encodedSchedule[DAYSOFWEEK.indexOf(days.days.toLowerCase())] =
-          temp.substring(0, EMPTYSCHEDULE.length) + EMPTYSCHEDULE.substring(temp.length, EMPTYSCHEDULE.length);
+        encodedSchedule[DAYS_OF_WEEK.indexOf(days.days.toLowerCase())] =
+          temp.substring(0, EMPTY_SCHEDULE.length) + EMPTY_SCHEDULE.substring(temp.length, EMPTY_SCHEDULE.length);
       });
       let ecoTemp = tempTemperatures.length === 0 ? 0 : Math.min(...tempTemperatures);
       let comfortTemp = tempTemperatures.length === 0 ? 0 : Math.max(...tempTemperatures);
@@ -1868,7 +1832,7 @@ export default class HomeKitHistory {
     // Encode program schedule
     // 45 = schedules
     // 46 = days of weeks for schedule;
-    const EMPTYSCHEDULE = '0800';
+    const EMPTY_SCHEDULE = '0800';
     let encodedSchedule = '';
     let daysbitmask = 0;
     let temp45Command = '';
@@ -1915,12 +1879,12 @@ export default class HomeKitHistory {
       // Program ID is set in 3bit repeating sections
       // sunsatfrithuwedtuemon
       program.days.forEach((day) => {
-        daysbitmask = daysbitmask + (program.id << (DAYSOFWEEK.indexOf(day) * 3));
+        daysbitmask = daysbitmask + (program.id << (DAYS_OF_WEEK.indexOf(day) * 3));
       });
     });
 
     // Build the encoded schedules command to send back to Eve
-    temp45Command = '05' + numberToEveHexString(this.EveAquaPersist.programs.length + 1, 2) + '000000' + EMPTYSCHEDULE + encodedSchedule;
+    temp45Command = '05' + numberToEveHexString(this.EveAquaPersist.programs.length + 1, 2) + '000000' + EMPTY_SCHEDULE + encodedSchedule;
     temp45Command = '45' + numberToEveHexString(temp45Command.length / 2, 2) + temp45Command;
 
     // Build the encoded days command to send back to Eve
@@ -2067,7 +2031,7 @@ export default class HomeKitHistory {
       numberToEveHexString(this.EveHome.fields.trim().match(/\S*[0-9]\S*/g).length, 2), // Calclate number of fields we have
       this.EveHome.fields.trim(), // Fields listed in string. Each field is seperated by spaces
       numberToEveHexString(this.EveHome.count, 4), // count of entries
-      numberToEveHexString(this.maxEntries === 0 ? MAX_HISTORY_SIZE : this.maxEntries, 4), // history max size
+      numberToEveHexString(this.#maxEntries === 0 ? MAX_HISTORY_SIZE : this.#maxEntries, 4), // history max size
       numberToEveHexString(1, 8),
     ); // first entry
 
@@ -2306,29 +2270,38 @@ export default class HomeKitHistory {
       this.EveHome.entry = 1; // requested to restart from beginning of history for sending to EveHome
     }
     this.EveHome.send = this.EveHome.count - this.EveHome.entry + 1; // Number of entries we're expected to send
-    this?.log?.debug && this.log.debug('#EveHistoryRequest: requested address', this.EveHome.entry);
+    this?.log?.debug?.('#EveHistoryRequest: requested address', this.EveHome.entry);
   }
 
   #EveSetTime(value) {
     // Time stamp from EveHome
     let timestamp = EPOCH_OFFSET + EveHexStringToNumber(decodeEveData(value));
 
-    this?.log?.debug && this.log.debug('#EveSetTime: timestamp offset', new Date(timestamp * 1000));
+    this?.log?.debug?.('#EveSetTime: timestamp offset', new Date(timestamp * 1000));
   }
 
   #createHistoryService(service, characteristics) {
-    // Setup the history service
+    if (
+      typeof this?.accessory?.getService !== 'function' ||
+      typeof this?.accessory?.addService !== 'function' ||
+      typeof service?.testCharacteristic !== 'function' ||
+      typeof service?.addCharacteristic !== 'function'
+    ) {
+      return;
+    }
+
     let historyService = this.accessory.getService(this.hap.Service.EveHomeHistory);
     if (historyService === undefined) {
       historyService = this.accessory.addService(this.hap.Service.EveHomeHistory, '', 1);
     }
 
-    // Add in any specified characteristics
-    characteristics.forEach((characteristic) => {
-      if (service.testCharacteristic(characteristic) === false) {
-        service.addCharacteristic(characteristic);
-      }
-    });
+    if (Array.isArray(characteristics) === true) {
+      characteristics.forEach((char) => {
+        if (service.testCharacteristic(char) === false) {
+          service.addCharacteristic(char);
+        }
+      });
+    }
 
     return historyService;
   }
