@@ -48,8 +48,7 @@ export default class HomeKitHistory {
   #persistKey = undefined;
   #maxEntries = MAX_HISTORY_SIZE; // used for rolling history. if 0, means no rollover
 
-  // eslint-disable-next-line no-unused-vars
-  constructor(accessory = undefined, api = undefined, log = undefined, eventEmitter = undefined, options = {}) {
+  constructor(accessory = undefined, api = undefined, log = undefined, options = {}) {
     // Validate the passed in logging object. We are expecting certain functions to be present
     if (Object.values(LOG_LEVELS).every((fn) => typeof log?.[fn] === 'function')) {
       this.log = log;
