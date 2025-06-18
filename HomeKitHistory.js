@@ -105,168 +105,173 @@ export default class HomeKitHistory {
   }
 
   // Class functions
-  addHistory(service, entry, timegap) {
-    if (typeof service !== 'object' || typeof service.UUID !== 'string' || typeof entry !== 'object') {
+  addHistory(target, entry, timegap) {
+    // Validate that target is a Service or Characteristic with a UUID string,
+    // entry is an object, and hap.Service exists (class/function)
+    if (
+      typeof target !== 'object' ||
+      typeof target.UUID !== 'string' ||
+      typeof entry !== 'object' ||
+      typeof this.hap?.Service !== 'function' ||
+      typeof this.hap?.Characteristic !== 'function'
+    ) {
       return;
     }
 
-    // we'll use the service or characteristic UUID to determine the history entry time and data we'll add
-    // reformat the entry object to order the fields consistantly in the output
-    // Add new history types in the switch statement
-    let historyEntry = {};
+    // Metadata map keyed by Service or Characteristic UUID
+    let SERVICE_HISTORY_META = {
+      [this.hap.Service.GarageDoorOpener.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = closed, 1 = open',
+      },
+      [this.hap.Service.Fan.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = off, 1 = on; optional: temperature, humidity',
+      },
+      [this.hap.Service.Fan.Fanv2.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = off, 1 = on; optional: temperature, humidity',
+      },
+      [this.hap.Service.HumidifierDehumidifier.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = off, 1 = on; optional: temperature, humidity',
+      },
+      [this.hap.Service.MotionSensor.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = motion cleared, 1 = motion detected',
+      },
+      [this.hap.Service.Window.UUID]: {
+        required: ['status', 'position'],
+        comment: 'status => 0 = closed, 1 = open; position => % open (0–100)',
+      },
+      [this.hap.Service.WindowCovering.UUID]: {
+        required: ['status', 'position'],
+        comment: 'status => 0 = closed, 1 = open; position => % open (0–100)',
+      },
+      [this.hap.Service.HeaterCooler.UUID]: {
+        required: ['status', 'temperature', 'target', 'humidity'],
+        comment: 'status => 0 = off, 1 = cooling, 2 = heating; includes temperature, target {low/high}, humidity',
+      },
+      [this.hap.Service.Thermostat.UUID]: {
+        required: ['status', 'temperature', 'target', 'humidity'],
+        comment: 'status => 0 = off, 1 = cooling, 2 = heating; includes temperature, target {low/high}, humidity',
+      },
+      [this.hap.Service.TemperatureSensor.UUID]: {
+        required: ['temperature'],
+        defaults: { humidity: 0, ppm: 0, voc: 0, pressure: 0 },
+        comment: 'temperature required; humidity, ppm, voc, pressure default to 0',
+      },
+      [this.hap.Service.AirQualitySensor.UUID]: {
+        required: ['temperature'],
+        defaults: { humidity: 0, ppm: 0, voc: 0, pressure: 0 },
+        comment: 'temperature required; humidity, ppm, voc, pressure default to 0',
+      },
+      [this.hap.Service.EveAirPressureSensor.UUID]: {
+        required: ['temperature'],
+        defaults: { humidity: 0, ppm: 0, voc: 0, pressure: 0 },
+        comment: 'temperature required; humidity, ppm, voc, pressure default to 0',
+      },
+      [this.hap.Service.Valve.UUID]: {
+        required: ['status', 'water', 'duration'],
+        comment: 'status => 0 = valve closed, 1 = open; includes water (L) and duration (s)',
+      },
+      [this.hap.Characteristic.WaterLevel.UUID]: {
+        required: ['level'],
+        comment: 'level => water level percentage (0–100)',
+      },
+      [this.hap.Service.LeakSensor.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = no leak, 1 = leak detected',
+      },
+      [this.hap.Service.Outlet.UUID]: {
+        required: ['status', 'volts', 'watts', 'amps'],
+        comment: 'status => 0 = off, 1 = on; includes volts, watts, amps',
+      },
+      [this.hap.Service.Doorbell.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = not pressed, 1 = pressed',
+      },
+      [this.hap.Service.SmokeSensor.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = smoke cleared, 1 = smoke detected',
+      },
+    };
 
+    // Lookup metadata for this target UUID (service or characteristic)
+    let meta = SERVICE_HISTORY_META[target.UUID];
+    if (typeof meta !== 'object') {
+      return;
+    }
+
+    // Set restart flag if applicable
     if (isNaN(this.restart) === false && typeof entry?.restart === 'undefined') {
-      // Object recently created, so log the time restarted our history service
       entry.restart = this.restart;
       this.restart = undefined;
     }
+
+    // Ensure time is set
     if (isNaN(entry?.time) === true) {
-      // No logging time was passed in, so set
       entry.time = Math.floor(Date.now() / 1000);
     }
-    if (typeof service?.subtype === 'undefined') {
-      service.subtype = 0;
+
+    // Provide default subtype if missing
+    if (typeof target.subtype === 'undefined') {
+      target.subtype = 0;
     }
+
+    // Default timegap if invalid
     if (isNaN(timegap) === true) {
-      timegap = 0; // Zero minimum time gap between entries
+      timegap = 0;
     }
+
+    // Validate required keys exist on entry
+    let required = [].concat(meta.required || []);
+    for (let i = 0; i < required.length; i++) {
+      if (typeof entry[required[i]] === 'undefined') {
+        return;
+      }
+    }
+
+    // Fill in default values if specified
+    if (typeof meta.defaults === 'object') {
+      let defaults = meta.defaults;
+      for (let key in defaults) {
+        if (typeof entry[key] === 'undefined') {
+          entry[key] = defaults[key];
+        }
+      }
+    }
+
+    // Compose list of keys to include in history entry (required + defaults)
+    let keys = [].concat(required);
+    if (typeof meta.defaults === 'object') {
+      for (let key in meta.defaults) {
+        if (keys.indexOf(key) === -1) {
+          keys.push(key);
+        }
+      }
+    }
+
+    // Build the filtered history entry
+    let historyEntry = {};
+    for (let i = 0; i < keys.length; i++) {
+      let key = keys[i];
+      if (typeof entry[key] !== 'undefined') {
+        historyEntry[key] = entry[key];
+      }
+    }
+
+    // Include restart if set
     if (isNaN(entry?.restart) === false) {
       historyEntry.restart = entry.restart;
     }
 
-    if (service.UUID === this.hap.Service.GarageDoorOpener.UUID) {
-      // Garage door history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = closed, 1 = open
-      historyEntry.status = entry.status;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
+    // Use subtype 0 for characteristics like WaterLevel or LeakSensor, else service subtype
+    let subtype =
+      target.UUID === this.hap.Characteristic.WaterLevel.UUID || target.UUID === this.hap.Service.LeakSensor.UUID ? 0 : target.subtype;
 
-    if (service.UUID === this.hap.Service.MotionSensor.UUID) {
-      // Motion sensor history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = motion cleared, 1 = motion detected
-      historyEntry.status = entry.status;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (service.UUID === this.hap.Service.Window.UUID || service.UUID === this.hap.Service.WindowCovering.UUID) {
-      // Window and Window Covering history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = closed, 1 = open
-      // entry.position => position in % 0% = closed 100% fully open
-      historyEntry.status = entry.status;
-      historyEntry.position = entry.position;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (service.UUID === this.hap.Service.HeaterCooler.UUID || service.UUID === this.hap.Service.Thermostat.UUID) {
-      // Thermostat and Heater/Cooler history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = off, 1 = fan, 2 = heating, 3 = cooling, 4 = dehumidifying
-      // entry.temperature  => current temperature in degress C
-      // entry.target => {low, high} = cooling limit, heating limit
-      // entry.humidity => current humidity
-      historyEntry.status = entry.status;
-      historyEntry.temperature = entry.temperature;
-      historyEntry.target = entry.target;
-      historyEntry.humidity = entry.humidity;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (
-      service.UUID === this.hap.Service.EveAirPressureSensor.UUID ||
-      service.UUID === this.hap.Service.AirQualitySensor.UUID ||
-      service.UUID === this.hap.Service.TemperatureSensor.UUID
-    ) {
-      // Temperature sensor history
-      // entry.time => unix time in seconds
-      // entry.temperature => current temperature in degress C
-      // entry.humidity => current humidity
-      // optional (entry.ppm)
-      // optional (entry.voc => current VOC measurement in ppb)
-      // optional (entry.pressure -> in hpa)
-      if (typeof entry.humidity === 'undefined') {
-        // fill out humidity if missing
-        entry.humidity = 0;
-      }
-      if (typeof entry.ppm === 'undefined') {
-        // fill out ppm if missing
-        entry.ppm = 0;
-      }
-      if (typeof entry.voc === 'undefined') {
-        // fill out voc if missing
-        entry.voc = 0;
-      }
-      if (typeof entry.pressure === 'undefined') {
-        // fill out pressure if missing
-        entry.pressure = 0;
-      }
-      historyEntry.temperature = entry.temperature;
-      historyEntry.humidity = entry.humidity;
-      historyEntry.ppm = entry.ppm;
-      historyEntry.voc = entry.voc;
-      historyEntry.pressure = entry.pressure;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (service.UUID === this.hap.Service.Valve.UUID) {
-      // Water valve history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = valve closed, 1 = valve opened
-      // entry.water => amount of water in L's
-      // entry.duration => time for water amount
-      historyEntry.status = entry.status;
-      historyEntry.water = entry.water;
-      historyEntry.duration = entry.duration;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (service.UUID === this.hap.Characteristic.WaterLevel.UUID) {
-      // Water level history
-      // entry.time => unix time in seconds
-      // entry.level => water level as percentage
-      historyEntry.level = entry.level;
-      this.#addEntry(service.UUID, 0, entry.time, timegap, historyEntry); // Characteristics don't have sub type, so we'll use 0 for it
-    }
-
-    if (service.UUID === this.hap.Service.LeakSensor.UUID) {
-      // Leak sensor history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = no leak, 1 = leak
-      historyEntry.status = entry.status;
-      this.#addEntry(service.UUID, 0, entry.time, timegap, historyEntry); // Characteristics don't have sub type, so we'll use 0 for it
-    }
-
-    if (service.UUID === this.hap.Service.Outlet.UUID) {
-      // Power outlet history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = off, 1 = on
-      // entry.volts  => voltage in Vs
-      // entry.watts  => watts in W's
-      // entry.amps  => current in A's
-      historyEntry.status = entry.status;
-      historyEntry.volts = entry.volts;
-      historyEntry.watts = entry.watts;
-      historyEntry.amps = entry.amps;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (service.UUID === this.hap.Service.Doorbell.UUID) {
-      // Doorbell press history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = not pressed, 1 = doorbell pressed
-      historyEntry.status = entry.status;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
-
-    if (service.UUID === this.hap.Service.SmokeSensor.UUID) {
-      // Smoke sensor history
-      // entry.time => unix time in seconds
-      // entry.status => 0 = smoke cleared, 1 = smoke detected
-      historyEntry.status = entry.status;
-      this.#addEntry(service.UUID, service.subtype, entry.time, timegap, historyEntry);
-    }
+    // Call internal add entry handler
+    this.#addEntry(target.UUID, subtype, entry.time, timegap, historyEntry);
   }
 
   resetHistory() {
@@ -2203,7 +2208,7 @@ export default class HomeKitHistory {
                 numberToEveHexString(historyEntry.temperature * 100, 4), // temperature
                 numberToEveHexString(historyEntry.humidity * 100, 4), // Humidity
                 numberToEveHexString(tempTarget * 100, 4), // target temperature for heating
-                numberToEveHexString(historyEntry.status === 2 ? 100 : historyEntry.status === 3 ? 50 : 0, 2), // 0% = off, 50% = cooling, 100% = heating
+                numberToEveHexString(historyEntry.status === 2 ? 100 : 0, 2), // 0% = off, 100% = heating
                 numberToEveHexString(0, 2), // Thermo target
                 numberToEveHexString(0, 2), // Window open status 0 = closed, 1 = open
               );
