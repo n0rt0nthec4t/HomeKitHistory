@@ -2,6 +2,22 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2025/06/28
+
+### Added
+- Support for `HomeKitDevice.HISTORY.GET` and `.SET` message types for EveHome-compatible communication.
+- Added static constants:
+  - `HomeKitHistory.GET` and `HomeKitHistory.SET` to identify routed EveHome read/write requests.
+  - `HomeKitHistory.EVE_OPTIONS` Symbol for tagging Eve-linked services.
+- Support for dynamic `.messages()` routing via `linkToEveHome(...)` options (e.g., `{ message: this.message.bind(this) }`).
+
+### Changed
+- Replaced legacy `getcommand`/`setcommand` handler options with routed message architecture.
+- `linkToEveHome()` now defers message handling to device-provided `message()` router via options.
+
+### Fixed
+- Ensured `await` support in `updateCharacteristic(..., await this.#xxxx)` via inline Promise resolution.
+
 ## 2025/06/17
 
 ### Added

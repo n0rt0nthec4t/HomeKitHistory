@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2025/06/16
+// Version 2025/06/28
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -35,6 +35,12 @@ const LOG_LEVELS = {
 
 // Create the history object
 export default class HomeKitHistory {
+  static GET = 'HomeKitHistory.onEveGet'; // for EveHome read requests
+  static SET = 'HomeKitHistory.onEveSet'; // for EveHome write requests
+
+  // Symbol used to temporarily store EveHome options on a service
+  static EVE_OPTIONS = Symbol('eveOptions');
+
   historyData = {}; // Tracked history data via persistant storage
   restart = Math.floor(Date.now() / 1000); // time we restarted object or created
   EveHome = undefined;
@@ -466,7 +472,7 @@ export default class HomeKitHistory {
 
   // Overlay our history into EveHome. Can only have one service history exposed to EveHome (ATM... see if can work around)
   // Returns object created for our EveHome accessory if successfull
-  linkToEveHome(service, options) {
+  async linkToEveHome(service, options) {
     if (typeof service !== 'object' || typeof this?.EveHome?.service !== 'undefined') {
       return;
     }
@@ -508,6 +514,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // Setup initial values and callbacks for charateristics we are using
@@ -556,6 +563,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         //17      CurrentPosition
@@ -671,6 +679,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // Need some internal storage to track Eve Thermo configuration from EveHome app
@@ -691,12 +700,12 @@ export default class HomeKitHistory {
           encodeEveData(util.format('2c %s be', numberToEveHexString(this.EveThermoPersist.firmware, 4))),
         ); // firmware version (build xxxx)));
 
-        service.updateCharacteristic(this.hap.Characteristic.EveProgramData, this.#EveThermoGetDetails(options.getcommand));
-        service.getCharacteristic(this.hap.Characteristic.EveProgramData).onGet(() => {
-          return this.#EveThermoGetDetails(options.getcommand);
+        service.updateCharacteristic(this.hap.Characteristic.EveProgramData, await this.#EveThermoGetDetails());
+        service.getCharacteristic(this.hap.Characteristic.EveProgramData).onGet(async () => {
+          return await this.#EveThermoGetDetails();
         });
 
-        service.getCharacteristic(this.hap.Characteristic.EveProgramCommand).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveProgramCommand).onSet(async (value) => {
           let programs = [];
           let processedData = {};
           let valHex = decodeEveData(value);
@@ -883,9 +892,9 @@ export default class HomeKitHistory {
             }
           }
 
-          // Send complete processed command data if configured to our callback
-          if (typeof options?.setcommand === 'function' && Object.keys(processedData).length !== 0) {
-            options.setcommand(processedData);
+          // Send complete processed command data via message router if defined
+          if (typeof this.EveHome?.messages === 'function' && Object.keys(processedData).length !== 0) {
+            await this.EveHome.messages(HomeKitHistory.SET, processedData);
           }
         });
         break;
@@ -911,6 +920,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         service.updateCharacteristic(
@@ -952,6 +962,7 @@ export default class HomeKitHistory {
             count: tempHistory.length,
             reftime: historyreftime,
             send: 0,
+            messages: typeof options?.messages === 'function' ? options.messages : undefined,
           };
 
           service.updateCharacteristic(
@@ -976,6 +987,7 @@ export default class HomeKitHistory {
             count: tempHistory.length,
             reftime: historyreftime,
             send: 0,
+            messages: typeof options?.messages === 'function' ? options.messages : undefined,
           };
 
           service.updateCharacteristic(
@@ -1022,6 +1034,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // Need some internal storage to track Eve Motion configuration from EveHome app
@@ -1128,6 +1141,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // TODO = work out what the 'signatures' need to be for an Eve Smoke
@@ -1148,21 +1162,21 @@ export default class HomeKitHistory {
         // Setup initial values and callbacks for charateristics we are using
         service.updateCharacteristic(
           this.hap.Characteristic.EveDeviceStatus,
-          this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveDeviceStatus),
+          await this.#EveSmokeGetDetails(this.hap.Characteristic.EveDeviceStatus),
         );
-        service.getCharacteristic(this.hap.Characteristic.EveDeviceStatus).onGet(() => {
-          return this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveDeviceStatus);
+        service.getCharacteristic(this.hap.Characteristic.EveDeviceStatus).onGet(async () => {
+          return await this.#EveSmokeGetDetails(this.hap.Characteristic.EveDeviceStatus);
         });
 
         service.updateCharacteristic(
           this.hap.Characteristic.EveGetConfiguration,
-          this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveGetConfiguration),
+          await this.#EveSmokeGetDetails(this.hap.Characteristic.EveGetConfiguration),
         );
-        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
-          return this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveGetConfiguration);
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(async () => {
+          return await this.#EveSmokeGetDetails(this.hap.Characteristic.EveGetConfiguration);
         });
 
-        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet(async (value) => {
           // Loop through set commands passed to us
           let processedData = {};
           let valHex = decodeEveData(value);
@@ -1200,9 +1214,9 @@ export default class HomeKitHistory {
             index += 4 + size; // Move to next command accounting for header size of 4 bytes
           }
 
-          // Send complete processed command data if configured to our callback
-          if (typeof options?.setcommand === 'function' && Object.keys(processedData).length !== 0) {
-            options.setcommand(processedData);
+          // Send complete processed command data via message router if defined
+          if (typeof this.EveHome?.messages === 'function' && Object.keys(processedData).length !== 0) {
+            await this.EveHome.messages(HomeKitHistory.SET, processedData);
           }
         });
         break;
@@ -1243,6 +1257,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // Need some internal storage to track Eve Aqua configuration from EveHome app
@@ -1258,12 +1273,12 @@ export default class HomeKitHistory {
         };
 
         // Setup initial values and callbacks for charateristics we are using
-        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, this.#EveAquaGetDetails(options.getcommand));
-        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
-          return this.#EveAquaGetDetails(options.getcommand);
+        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, await this.#EveAquaGetDetails());
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(async () => {
+          return this.#EveAquaGetDetails();
         });
 
-        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet(async (value) => {
           // Loop through set commands passed to us
           let programs = [];
           let processedData = {};
@@ -1474,9 +1489,9 @@ export default class HomeKitHistory {
             index += 4 + size; // Move to next command accounting for header size of 4 bytes
           }
 
-          // Send complete processed command data if configured to our callback
-          if (typeof options?.setcommand === 'function' && Object.keys(processedData).length !== 0) {
-            options.setcommand(processedData);
+          // Send complete processed command data via message router if defined
+          if (typeof this.EveHome?.messages === 'function' && Object.keys(processedData).length !== 0) {
+            await this.EveHome.messages(HomeKitHistory.SET, processedData);
           }
         });
         break;
@@ -1513,6 +1528,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // Setup initial values and callbacks for charateristics we are using
@@ -1523,26 +1539,26 @@ export default class HomeKitHistory {
 
         service.updateCharacteristic(
           this.hap.Characteristic.EveElectricalCurrent,
-          this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalCurrent),
+          await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalCurrent),
         );
-        service.getCharacteristic(this.hap.Characteristic.EveElectricalCurrent).onGet(() => {
-          return this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalCurrent);
+        service.getCharacteristic(this.hap.Characteristic.EveElectricalCurrent).onGet(async () => {
+          return await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalCurrent);
         });
 
         service.updateCharacteristic(
           this.hap.Characteristic.EveElectricalVoltage,
-          this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalVoltage),
+          await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalVoltage),
         );
-        service.getCharacteristic(this.hap.Characteristic.EveElectricalVoltage).onGet(() => {
-          return this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalVoltage);
+        service.getCharacteristic(this.hap.Characteristic.EveElectricalVoltage).onGet(async () => {
+          return await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalVoltage);
         });
 
         service.updateCharacteristic(
           this.hap.Characteristic.EveElectricalWattage,
-          this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalWattage),
+          await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalWattage),
         );
-        service.getCharacteristic(this.hap.Characteristic.EveElectricalWattage).onGet(() => {
-          return this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalWattage);
+        service.getCharacteristic(this.hap.Characteristic.EveElectricalWattage).onGet(async () => {
+          return await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalWattage);
         });
         break;
       }
@@ -1576,6 +1592,7 @@ export default class HomeKitHistory {
           count: tempHistory.length,
           reftime: historyreftime,
           send: 0,
+          messages: typeof options?.messages === 'function' ? options.messages : undefined,
         };
 
         // Need some internal storage to track Eve Water Guard configuration from EveHome app
@@ -1586,9 +1603,9 @@ export default class HomeKitHistory {
         };
 
         // Setup initial values and callbacks for charateristics we are using
-        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, this.#EveWaterGuardGetDetails(options.getcommand));
-        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
-          return this.#EveWaterGuardGetDetails(options.getcommand);
+        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, await this.#EveWaterGuardGetDetails());
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(async () => {
+          return await this.#EveWaterGuardGetDetails();
         });
 
         service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
@@ -1669,8 +1686,8 @@ export default class HomeKitHistory {
     }
   }
 
-  updateEveHome(service, getcommand) {
-    if (typeof this?.EveHome?.service !== 'object' || typeof getcommand !== 'function') {
+  async updateEveHome(service) {
+    if (typeof this?.EveHome?.service !== 'object') {
       return;
     }
 
@@ -1678,39 +1695,39 @@ export default class HomeKitHistory {
       case this.hap.Service.SmokeSensor.UUID: {
         service.updateCharacteristic(
           this.hap.Characteristic.EveDeviceStatus,
-          this.#EveSmokeGetDetails(getcommand, this.hap.Characteristic.EveDeviceStatus),
+          await this.#EveSmokeGetDetails(this.hap.Characteristic.EveDeviceStatus),
         );
         service.updateCharacteristic(
           this.hap.Characteristic.EveGetConfiguration,
-          this.#EveSmokeGetDetails(getcommand, this.hap.Characteristic.EveGetConfiguration),
+          await this.#EveSmokeGetDetails(this.hap.Characteristic.EveGetConfiguration),
         );
         break;
       }
 
       case this.hap.Service.HeaterCooler.UUID:
       case this.hap.Service.Thermostat.UUID: {
-        service.updateCharacteristic(this.hap.Characteristic.EveProgramCommand, this.#EveThermoGetDetails(getcommand));
+        service.updateCharacteristic(this.hap.Characteristic.EveProgramCommand, await this.#EveThermoGetDetails());
         break;
       }
 
       case this.hap.Service.Valve.UUID:
       case this.hap.Service.IrrigationSystem.UUID: {
-        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, this.#EveAquaGetDetails(getcommand));
+        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, await this.#EveAquaGetDetails());
         break;
       }
 
       case this.hap.Service.Outlet.UUID: {
         service.updateCharacteristic(
           this.hap.Characteristic.EveElectricalWattage,
-          this.#EveEnergyGetDetails(getcommand, this.hap.Characteristic.EveElectricalWattage),
+          await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalWattage),
         );
         service.updateCharacteristic(
           this.hap.Characteristic.EveElectricalVoltage,
-          this.#EveEnergyGetDetails(getcommand, this.hap.Characteristic.EveElectricalVoltage),
+          await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalVoltage),
         );
         service.updateCharacteristic(
           this.hap.Characteristic.EveElectricalCurrent,
-          this.#EveEnergyGetDetails(getcommand, this.hap.Characteristic.EveElectricalCurrent),
+          await this.#EveEnergyGetDetails(this.hap.Characteristic.EveElectricalCurrent),
         );
         break;
       }
@@ -1727,7 +1744,7 @@ export default class HomeKitHistory {
     return lastTime;
   }
 
-  #EveThermoGetDetails(getOptions) {
+  async #EveThermoGetDetails() {
     // returns an encoded value formatted for an Eve Thermo device
     //
     // TODO - before enabling below need to workout:
@@ -1755,9 +1772,12 @@ export default class HomeKitHistory {
     // fc - date/time (mmhhDDMMYY)
     // 1a - default day program??
 
-    if (typeof getOptions === 'function') {
-      // Fill in details we might want to be dynamic
-      this.EveThermoPersist = getOptions(this.EveThermoPersist);
+    // If a message router exists, call it to potentially update our persisted state
+    if (typeof this.EveHome?.messages === 'function') {
+      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveThermoPersist))?.call;
+      if (typeof updated === 'object') {
+        this.EveThermoPersist = updated;
+      }
     }
 
     // Encode current date/time
@@ -1810,11 +1830,15 @@ export default class HomeKitHistory {
     return encodeEveData(value);
   }
 
-  #EveAquaGetDetails(getOptions) {
+  async #EveAquaGetDetails() {
     // returns an encoded value formatted for an Eve Aqua device for water usage and last water time
-    if (typeof getOptions === 'function') {
-      // Fill in details we might want to be dynamic
-      this.EveAquaPersist = getOptions(this.EveAquaPersist);
+
+    // If a message router exists, call it to potentially update our persisted state
+    if (typeof this.EveHome?.messages === 'function') {
+      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveAquaPersist))?.call;
+      if (typeof updated === 'object') {
+        this.EveAquaPersist = updated;
+      }
     }
 
     if (Array.isArray(this.EveAquaPersist.programs) === false) {
@@ -1916,13 +1940,16 @@ export default class HomeKitHistory {
     return encodeEveData(value);
   }
 
-  #EveEnergyGetDetails(getOptions, returnForCharacteristic) {
+  async #EveEnergyGetDetails(returnForCharacteristic) {
     let energyDetails = {};
     let returnValue = null;
 
-    if (typeof getOptions === 'function') {
-      // Fill in details we might want to be dynamic
-      energyDetails = getOptions(energyDetails);
+    // If a message router exists, call it to potentially update our persisted state
+    if (typeof this.EveHome?.messages === 'function') {
+      let updated = (await this.EveHome.messages(HomeKitHistory.GET, energyDetails))?.call;
+      if (typeof updated === 'object') {
+        energyDetails = updated;
+      }
     }
 
     if (returnForCharacteristic.UUID === this.hap.Characteristic.EveElectricalWattage.UUID && typeof energyDetails?.watts === 'number') {
@@ -1938,13 +1965,16 @@ export default class HomeKitHistory {
     return returnValue;
   }
 
-  #EveSmokeGetDetails(getOptions, returnForCharacteristic) {
+  async #EveSmokeGetDetails(returnForCharacteristic) {
     // returns an encoded value formatted for an Eve Smoke device
     let returnValue = null;
 
-    if (typeof getOptions === 'function') {
-      // Fill in details we might want to be dynamic
-      this.EveSmokePersist = getOptions(this.EveSmokePersist);
+    // If a message router exists, call it to potentially update our persisted state
+    if (typeof this.EveHome?.messages === 'function') {
+      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveSmokePersist))?.call;
+      if (typeof updated === 'object') {
+        this.EveSmokePersist = updated;
+      }
     }
 
     if (returnForCharacteristic.UUID === this.hap.Characteristic.EveGetConfiguration.UUID) {
@@ -2004,11 +2034,15 @@ export default class HomeKitHistory {
     return returnValue;
   }
 
-  #EveWaterGuardGetDetails(getOptions) {
+  async #EveWaterGuardGetDetails() {
     // returns an encoded value formatted for an Eve Water Guard
-    if (typeof getOptions === 'function') {
-      // Fill in details we might want to be dynamic
-      this.EveWaterGuardPersist = getOptions(this.EveWaterGuardPersist);
+
+    // If a message router exists, call it to potentially update our persisted state
+    if (typeof this.EveHome?.messages === 'function') {
+      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveWaterGuardPersist))?.call;
+      if (typeof updated === 'object') {
+        this.EveWaterGuardPersist = updated;
+      }
     }
 
     let value = util.format(
