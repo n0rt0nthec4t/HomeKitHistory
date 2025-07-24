@@ -2,6 +2,12 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2025/07/24
+
+### Added
+- **LockMechanism, service support** in `addHistory()`:
+  - Tracks `status`
+
 ## 2025/06/28
 
 ### Added

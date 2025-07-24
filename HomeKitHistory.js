@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2025/06/28
+// Version 2025.07.24
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -129,6 +129,10 @@ export default class HomeKitHistory {
       [this.hap.Service.GarageDoorOpener.UUID]: {
         required: ['status'],
         comment: 'status => 0 = closed, 1 = open',
+      },
+      [this.hap.Service.LockMechanism.UUID]: {
+        required: ['status'],
+        comment: 'status => 0 = locked, 1 = unlocked',
       },
       [this.hap.Service.Fan.UUID]: {
         required: ['status'],
@@ -485,7 +489,8 @@ export default class HomeKitHistory {
       case this.hap.Service.ContactSensor.UUID:
       case this.hap.Service.Door.UUID:
       case this.hap.Service.Window.UUID:
-      case this.hap.Service.GarageDoorOpener.UUID: {
+      case this.hap.Service.GarageDoorOpener.UUID:
+      case this.hap.Service.LockMechanism.UUID: {
         // treat these as EveHome Door
         // Inverse status used for all UUID types except this.hap.Service.ContactSensor.UUID
 
