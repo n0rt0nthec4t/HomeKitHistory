@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2025.07.24
+// Version 2025.08.06
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -1711,7 +1711,7 @@ export default class HomeKitHistory {
 
       case this.hap.Service.HeaterCooler.UUID:
       case this.hap.Service.Thermostat.UUID: {
-        service.updateCharacteristic(this.hap.Characteristic.EveProgramCommand, await this.#EveThermoGetDetails());
+        service.updateCharacteristic(this.hap.Characteristic.EveProgramData, await this.#EveThermoGetDetails());
         break;
       }
 
@@ -1779,7 +1779,7 @@ export default class HomeKitHistory {
 
     // If a message router exists, call it to potentially update our persisted state
     if (typeof this.EveHome?.messages === 'function') {
-      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveThermoPersist))?.call;
+      let updated = await this.EveHome.messages(HomeKitHistory.GET, this.EveThermoPersist);
       if (typeof updated === 'object') {
         this.EveThermoPersist = updated;
       }
@@ -1840,7 +1840,7 @@ export default class HomeKitHistory {
 
     // If a message router exists, call it to potentially update our persisted state
     if (typeof this.EveHome?.messages === 'function') {
-      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveAquaPersist))?.call;
+      let updated = await this.EveHome.messages(HomeKitHistory.GET, this.EveAquaPersist);
       if (typeof updated === 'object') {
         this.EveAquaPersist = updated;
       }
@@ -1951,7 +1951,7 @@ export default class HomeKitHistory {
 
     // If a message router exists, call it to potentially update our persisted state
     if (typeof this.EveHome?.messages === 'function') {
-      let updated = (await this.EveHome.messages(HomeKitHistory.GET, energyDetails))?.call;
+      let updated = await this.EveHome.messages(HomeKitHistory.GET, energyDetails);
       if (typeof updated === 'object') {
         energyDetails = updated;
       }
@@ -1976,7 +1976,7 @@ export default class HomeKitHistory {
 
     // If a message router exists, call it to potentially update our persisted state
     if (typeof this.EveHome?.messages === 'function') {
-      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveSmokePersist))?.call;
+      let updated = await this.EveHome.messages(HomeKitHistory.GET, this.EveSmokePersist);
       if (typeof updated === 'object') {
         this.EveSmokePersist = updated;
       }
@@ -2044,7 +2044,7 @@ export default class HomeKitHistory {
 
     // If a message router exists, call it to potentially update our persisted state
     if (typeof this.EveHome?.messages === 'function') {
-      let updated = (await this.EveHome.messages(HomeKitHistory.GET, this.EveWaterGuardPersist))?.call;
+      let updated = await this.EveHome.messages(HomeKitHistory.GET, this.EveWaterGuardPersist);
       if (typeof updated === 'object') {
         this.EveWaterGuardPersist = updated;
       }
