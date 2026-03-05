@@ -2,6 +2,13 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2026/03/05
+- Added additional status support for **HumidifierDehumidifier** service
+  - `status` values:
+    - `0` = off
+    - `1` = humidifying
+    - `2` = dehumidifying
+
 ## 2025/07/24
 
 ### Added

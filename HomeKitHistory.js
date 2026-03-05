@@ -10,7 +10,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2025.08.06
+// Version 2026.03.05
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -144,7 +144,7 @@ export default class HomeKitHistory {
       },
       [this.hap.Service.HumidifierDehumidifier.UUID]: {
         required: ['status'],
-        comment: 'status => 0 = off, 1 = on; optional: temperature, humidity',
+        comment: 'status => 0 = off, 1 = humidifying, 2 = dehumidifying; optional: temperature, humidity',
       },
       [this.hap.Service.MotionSensor.UUID]: {
         required: ['status'],
