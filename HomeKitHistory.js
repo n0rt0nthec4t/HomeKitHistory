@@ -1,5 +1,9 @@
-// HomeKit history service
-// Simple history service for HomeKit developed accessories with HAP-NodeJS
+// HomeKit history and Eve Home compatibility service
+//
+// Shared history helper for HomeKit accessories running under Homebridge or standalone HAP-NodeJS.
+// Provides persistent history storage, Eve Home protocol encoding/decoding, and custom Eve services
+// and characteristics for supported accessory types such as thermo, weather, motion, smoke, aqua,
+// energy, and room sensors.
 //
 // todo (EveHome integration)
 // -- get history to show for motion when attached to a smoke sensor
@@ -10,7 +14,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2026.03.05
+// Version 2026.03.15
 // Mark Hulskamp
 
 // Define nodejs module requirements
