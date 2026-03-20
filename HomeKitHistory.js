@@ -14,7 +14,7 @@
 //
 // Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
 //
-// Version 2026.03.15
+// Version 2026.03.20
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -41,9 +41,7 @@ const LOG_LEVELS = {
 export default class HomeKitHistory {
   static GET = 'HomeKitHistory.onEveGet'; // for EveHome read requests
   static SET = 'HomeKitHistory.onEveSet'; // for EveHome write requests
-
-  // Symbol used to temporarily store EveHome options on a service
-  static EVE_OPTIONS = Symbol('eveOptions');
+  static EVE_OPTIONS = Symbol('eveOptions'); // Symbol used to temporarily store EveHome options on a service
 
   historyData = {}; // Tracked history data via persistant storage
   restart = Math.floor(Date.now() / 1000); // time we restarted object or created
@@ -1161,11 +1159,11 @@ export default class HomeKitHistory {
           firmware: typeof options?.EveSmoke_firmware === 'number' ? options.EveSmoke_firmware : 1208, // Firmware version
           lastalarmtest: typeof options?.EveSmoke_lastalarmtest === 'number' ? options.EveSmoke_lastalarmtest : 0, // Seconds of alarm test
           alarmtest: options?.EveSmoke_alarmtest === true, // Is alarmtest running
-          heatstatus: options.EveSmoke_heatstatus === true, // Heat sensor status
+          heatstatus: options?.EveSmoke_heatstatus === true, // Heat sensor status
           statusled: options?.EveSmoke_statusled === false, // Status LED flash/enabled
           smoketestpassed: options?.EveSmoke_smoketestpassed === false, // Passed smoke test?
           heattestpassed: options?.EveSmoke_heattestpassed === false, // Passed smoke test?
-          hushedstate: options.EveSmoke_hushedstate === true, // Alarms muted
+          hushedstate: options?.EveSmoke_hushedstate === true, // Alarms muted
         };
 
         // Setup initial values and callbacks for charateristics we are using
@@ -2568,7 +2566,7 @@ export default class HomeKitHistory {
       minStep: 10,
     });
 
-    createCustomCharacteristic('Eve VOC Level', 'E863F10B-079E-48FF-8F27-9C2605A29F5', {
+    createCustomCharacteristic('Eve VOC Level', 'E863F10B-079E-48FF-8F27-9C2605A29F52', {
       format: this.hap.Formats.UINT16,
       perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
       unit: 'ppm',
