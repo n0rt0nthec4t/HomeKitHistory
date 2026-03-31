@@ -1,18 +1,36 @@
-// HomeKit history and Eve Home compatibility service
+// HomeKitHistory
 //
-// Shared history helper for HomeKit accessories running under Homebridge or standalone HAP-NodeJS.
-// Provides persistent history storage, Eve Home protocol encoding/decoding, and custom Eve services
-// and characteristics for supported accessory types such as thermo, weather, motion, smoke, aqua,
-// energy, and room sensors.
+// Shared history service implementation for HomeKit-enabled devices.
+// Supports both Homebridge and direct HAP-NodeJS backends.
 //
-// todo (EveHome integration)
-// -- get history to show for motion when attached to a smoke sensor
-// -- get history to show for smoke when attached to a smoke sensor
-// -- thermo valve protection
-// -- Eve Degree/Weather2 history
-// -- Eve Water guard history
+// Provides EveHome-compatible history logging and configuration services,
+// allowing supported HomeKit apps (e.g. Eve) to display historical data
+// such as motion, contact, temperature, humidity, energy, and other events.
 //
-// Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
+// Designed to integrate with HomeKitDevice and provide a consistent,
+// reusable history layer across multiple projects and device types.
+//
+// Based on fakegato-history by simont77 (https://github.com/simont77/fakegato-history)
+//
+// Key features:
+// - EveHome history service and characteristic support
+// - Structured event logging with change detection
+// - Configurable history persistence and timegap handling
+// - Optional linkage to HomeKit services via HomeKitDevice
+// - Support for multiple service types (motion, contact, thermostat, energy, etc.)
+//
+// TODO:
+// - Expand support for additional HomeKit services (e.g. AirQuality, Leak, Light, etc.)
+// - Improve normalisation of history data across different service types
+// - Investigate persistence/backing store options beyond in-memory history
+// - Refine EveHome configuration characteristics for unsupported services
+// - Optimise history pruning and memory usage for long-running instances
+// - Consider modularising service handlers into pluggable components
+//
+// Extending classes or consumers are responsible for:
+// - Calling addHistory(...) with appropriate event data
+// - Defining how and when history entries are generated
+// - Managing any device-specific state used for history tracking
 //
 // Version 2026.03.20
 // Mark Hulskamp
