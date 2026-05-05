@@ -2,6 +2,15 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2026/05/05
+- Improved history lookup handling and performance
+  - Refactored `getHistory()`, `lastHistory()`, and `entryCount()` to share common filter/matching logic
+  - Optimised `lastHistory()` and `entryCount()` to avoid building full temporary history arrays
+  - Added safer history data validation before processing circular buffer entries
+  - Improved handling of invalid/null history, target, and entry data
+  - Tightened `maxEntries` validation
+  - Fixed history type rebuilding to include index `0`
+
 ## 2026/03/05
 - Added additional status support for **HumidifierDehumidifier** service
   - `status` values:

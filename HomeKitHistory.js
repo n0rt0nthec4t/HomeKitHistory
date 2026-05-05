@@ -32,14 +32,13 @@
 // - Defining how and when history entries are generated
 // - Managing any device-specific state used for history tracking
 //
-// Version 2026.03.20
+// Version 2026.05.05
 // Mark Hulskamp
 
 // Define nodejs module requirements
 import { setTimeout } from 'node:timers';
 import { Buffer } from 'node:buffer';
 import util from 'util';
-import fs from 'fs';
 
 // Define constants
 const MAX_HISTORY_SIZE = 16384; // 16k entries
@@ -61,7 +60,7 @@ export default class HomeKitHistory {
   static SET = 'HomeKitHistory.onEveSet'; // for EveHome write requests
   static EVE_OPTIONS = Symbol('eveOptions'); // Symbol used to temporarily store EveHome options on a service
 
-  historyData = {}; // Tracked history data via persistant storage
+  historyData = {}; // Tracked history data via persistent storage
   restart = Math.floor(Date.now() / 1000); // time we restarted object or created
   EveHome = undefined;
 
@@ -93,15 +92,15 @@ export default class HomeKitHistory {
       return;
     }
 
-    if (typeof accessory !== 'undefined' && typeof accessory === 'object') {
+    if (accessory !== null && typeof accessory === 'object') {
       this.accessory = accessory;
     }
 
-    if (isNaN(options?.maxEntries) === false) {
+    if (Number.isInteger(options?.maxEntries) === true && options.maxEntries >= 0) {
       this.#maxEntries = options.maxEntries;
     }
 
-    // Determine the peristant storage file name
+    // Determine the persistent storage file name
     if (typeof accessory?.username !== 'undefined') {
       // Since we have a username for the accessory, we'll assume this is not running under Homebridge
       // We'll use it's persist folder for storing history files
@@ -113,10 +112,10 @@ export default class HomeKitHistory {
       this.#persistKey = util.format('History.%s.json', accessory.UUID);
     }
 
-    // Setup persistant storage and load any data we have already
+    // Setup persistent storage and load any data we have already
     this.#persistStorage = this.hap.HAPStorage.storage();
     this.historyData = this.#persistStorage.getItem(this.#persistKey);
-    if (typeof this.historyData !== 'object') {
+    if (typeof this.historyData !== 'object' || this.historyData === null) {
       // Getting storage key didnt return an object, we'll assume no history present, so start new history for this accessory
       this.resetHistory(); // Start with blank history
     }
@@ -135,8 +134,10 @@ export default class HomeKitHistory {
     // Validate that target is a Service or Characteristic with a UUID string,
     // entry is an object, and hap.Service exists (class/function)
     if (
+      target === null ||
       typeof target !== 'object' ||
       typeof target.UUID !== 'string' ||
+      entry === null ||
       typeof entry !== 'object' ||
       typeof this.hap?.Service !== 'function' ||
       typeof this.hap?.Characteristic !== 'function'
@@ -326,6 +327,72 @@ export default class HomeKitHistory {
     this.#persistStorage.setItem(this.#persistKey, this.historyData);
   }
 
+  getHistory(service, subtype, specifickey) {
+    // Return matching history entries in chronological order (oldest -> newest)
+    if (this.#validHistoryData() === false) {
+      return [];
+    }
+
+    let filter = this.#historyFilter(service, subtype, specifickey);
+
+    // Rebuild logical history order from circular buffer:
+    // - Entries from 'next' to end are the oldest
+    // - Entries from 0 to (next - 1) are the newest
+    return this.historyData.data
+      .slice(this.historyData.next)
+      .concat(this.historyData.data.slice(0, this.historyData.next))
+      .filter((historyEntry) => this.#matchHistoryEntry(historyEntry, filter));
+  }
+
+  lastHistory(service, subtype, specifickey) {
+    // Return most recent matching history entry without building a full history array
+    if (this.#validHistoryData() === false) {
+      return;
+    }
+
+    let filter = this.#historyFilter(service, subtype, specifickey);
+
+    // Scan newest entries before the next write position
+    for (let i = this.historyData.next - 1; i >= 0; i--) {
+      if (this.#matchHistoryEntry(this.historyData.data[i], filter) === true) {
+        return this.historyData.data[i];
+      }
+    }
+
+    // Scan older entries retained after buffer wrap
+    for (let i = this.historyData.data.length - 1; i >= this.historyData.next; i--) {
+      if (this.#matchHistoryEntry(this.historyData.data[i], filter) === true) {
+        return this.historyData.data[i];
+      }
+    }
+  }
+
+  entryCount(service, subtype, specifickey) {
+    // Count matching history entries without building a full history array
+    if (this.#validHistoryData() === false) {
+      return 0;
+    }
+
+    let filter = this.#historyFilter(service, subtype, specifickey);
+    let count = 0;
+
+    // Scan newest entries before the next write position
+    for (let i = this.historyData.next - 1; i >= 0; i--) {
+      if (this.#matchHistoryEntry(this.historyData.data[i], filter) === true) {
+        count++;
+      }
+    }
+
+    // Scan older entries retained after buffer wrap
+    for (let i = this.historyData.data.length - 1; i >= this.historyData.next; i--) {
+      if (this.#matchHistoryEntry(this.historyData.data[i], filter) === true) {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
   #addEntry(type, sub, time, timegap, entry) {
     let historyEntry = {};
     let recordEntry = true; // always record entry unless we don't need to
@@ -381,96 +448,46 @@ export default class HomeKitHistory {
     }
   }
 
-  getHistory(service, subtype, specifickey) {
-    // returns a JSON object of all history for this service and subtype
-    // handles if we've rolled over history also
-    let tempHistory = [];
-    if (specifickey === undefined) {
-      specifickey = {};
+  #historyFilter(service, subtype, specifickey) {
+    let filter = {};
+
+    if (typeof specifickey === 'object' && specifickey !== null && Array.isArray(specifickey) === false) {
+      filter = { ...specifickey };
     }
 
-    if (service !== undefined && service !== '') {
-      // passed in UUID byself, rather than service object
-      specifickey.type = service;
+    if (typeof service === 'string' && service !== '') {
+      filter.type = service;
     }
 
-    if (service?.UUID !== undefined && service.UUID !== '') {
-      specifickey.type = service.UUID;
+    if (typeof service === 'object' && typeof service?.UUID === 'string' && service.UUID !== '') {
+      filter.type = service.UUID;
     }
 
-    if (service?.subtype === undefined && typeof subtype === undefined) {
-      specifickey.sub = subtype;
+    if (typeof subtype !== 'undefined' && subtype !== null) {
+      filter.sub = subtype;
     }
 
-    if (subtype !== undefined && subtype !== null) {
-      specifickey.sub = subtype;
-    }
-
-    tempHistory = tempHistory
-      .concat(
-        this.historyData.data.slice(this.historyData.next, this.historyData.data.length),
-        this.historyData.data.slice(0, this.historyData.next),
-      )
-      .filter((historyEntry) => {
-        return Object.entries(specifickey).every(([key, value]) => historyEntry[key] === value);
-      });
-
-    return tempHistory;
+    return filter;
   }
 
-  generateCSV(service, csvfile) {
-    // Generates a CSV file for use in applications such as Numbers/Excel for graphing
-    // we get all the data for the service, ignoring the specific subtypes
-    let tempHistory = this.getHistory(service, null); // all history
-    if (tempHistory.length !== 0) {
-      let writer = fs.createWriteStream(csvfile, {
-        flags: 'w',
-        autoClose: 'true',
-      });
-      if (writer !== null) {
-        // write header, we'll use the first record keys for the header keys
-        let header = 'time,subtype';
-        Object.keys(tempHistory[0]).forEach((key) => {
-          if (key !== 'time' && key !== 'type' && key !== 'sub' && key !== 'restart') {
-            header = header + ',' + key;
-          }
-        });
-        writer.write(header + '\n');
-
-        // write data
-        // Date/Time converted into local timezone
-        tempHistory.forEach((historyEntry) => {
-          let csvline = new Date(historyEntry.time * 1000).toLocaleString().replace(',', '') + ',' + historyEntry.sub;
-          Object.entries(historyEntry).forEach(([key, value]) => {
-            if (key !== 'time' && key !== 'type' && key !== 'sub' && key !== 'restart') {
-              csvline = csvline + ',' + value;
-            }
-          });
-          writer.write(csvline + '\n');
-        });
-        writer.end();
-      }
-    }
+  #matchHistoryEntry(entry, filter) {
+    return typeof entry === 'object' && entry !== null && Object.entries(filter).every(([key, value]) => entry[key] === value);
   }
 
-  lastHistory(service, subtype) {
-    // returns the last history event for this service type and subtype
-    let lastHistory = this.getHistory(service, subtype);
-    return lastHistory.length > 0 ? lastHistory?.[lastHistory.length - 1] : undefined;
-  }
-
-  entryCount(service, subtype, specifickey) {
-    // returns the number of history entries for this service type and subtype
-    // can can also be limited to a specific key value
-    let tempHistory = this.getHistory(service, subtype, specifickey);
-    return tempHistory.length;
+  #validHistoryData() {
+    return (
+      Array.isArray(this.historyData?.data) === true &&
+      Number.isInteger(this.historyData?.next) === true &&
+      this.historyData.next >= 0 &&
+      this.historyData.next <= this.historyData.data.length
+    );
   }
 
   #updateHistoryTypes() {
     // Builds the known history types and last entry in current history data
     // Might be time consuming.....
     this.historyData.types = [];
-    for (let index = this.historyData.data.length - 1; index > 0; index--) {
+    for (let index = this.historyData.data.length - 1; index >= 0; index--) {
       if (
         this.historyData.types.findIndex(
           (type) =>
@@ -497,7 +514,7 @@ export default class HomeKitHistory {
   // Overlay our history into EveHome. Can only have one service history exposed to EveHome (ATM... see if can work around)
   // Returns object created for our EveHome accessory if successfull
   async linkToEveHome(service, options) {
-    if (typeof service !== 'object' || typeof this?.EveHome?.service !== 'undefined') {
+    if (service === null || typeof service !== 'object' || typeof this?.EveHome?.service !== 'undefined') {
       return;
     }
 
@@ -2824,7 +2841,7 @@ function numberToEveHexString(number, padtostringlength, precision) {
   return String(buffer.toString('hex').padEnd(padtostringlength, '0').slice(0, padtostringlength));
 }
 
-// Converts Eve encoded hex string to a signed integer value OR float value with number of precission digits
+// Converts Eve encoded hex string to a signed integer value OR float value with number of precision digits
 function EveHexStringToNumber(string, precision) {
   if (typeof string !== 'string') {
     return;
