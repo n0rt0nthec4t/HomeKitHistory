@@ -2,6 +2,11 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2026/08/10
+- Added compatibility with the minimal file storage introduced in HAP-NodeJS 2.2.0
+- Replaced removed `setItem()` calls with `setItemSync()`, which is supported by both the old `node-persist` and new storage implementations
+- Kept synchronous `getItem(key)` loading and the existing on-disk filenames and data format unchanged
+
 ## 2026/05/05
 - Improved history lookup handling and performance
   - Refactored `getHistory()`, `lastHistory()`, and `entryCount()` to share common filter/matching logic

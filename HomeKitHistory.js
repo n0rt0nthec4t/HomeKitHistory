@@ -32,7 +32,7 @@
 // - Defining how and when history entries are generated
 // - Managing any device-specific state used for history tracking
 //
-// Version 2026.05.05
+// Version 2026.08.10
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -112,7 +112,8 @@ export default class HomeKitHistory {
       this.#persistKey = util.format('History.%s.json', accessory.UUID);
     }
 
-    // Setup persistent storage and load any data we have already
+    // Setup persistent storage and synchronously load any existing data.
+    // Plain getItem(key) is supported by both node-persist and HAP-NodeJS file storage.
     this.#persistStorage = this.hap.HAPStorage.storage();
     this.historyData = this.#persistStorage.getItem(this.#persistKey);
     if (typeof this.historyData !== 'object' || this.historyData === null) {
@@ -313,7 +314,7 @@ export default class HomeKitHistory {
     this.historyData.next = 0; // next entry for history is at start
     this.historyData.types = []; // no service types in history
     this.historyData.data = []; // no history data
-    this.#persistStorage.setItem(this.#persistKey, this.historyData);
+    this.#persistStorage.setItemSync(this.#persistKey, this.historyData);
   }
 
   rolloverHistory() {
@@ -324,7 +325,7 @@ export default class HomeKitHistory {
     this.historyData.rollover = Math.floor(Date.now() / 1000);
     this.historyData.next = 0;
     this.#updateHistoryTypes();
-    this.#persistStorage.setItem(this.#persistKey, this.historyData);
+    this.#persistStorage.setItemSync(this.#persistKey, this.historyData);
   }
 
   getHistory(service, subtype, specifickey) {
@@ -444,7 +445,7 @@ export default class HomeKitHistory {
       });
 
       // Save to persistent storage
-      this.#persistStorage.setItem(this.#persistKey, this.historyData);
+      this.#persistStorage.setItemSync(this.#persistKey, this.historyData);
     }
   }
 
