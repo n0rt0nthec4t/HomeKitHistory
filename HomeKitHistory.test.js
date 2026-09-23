@@ -2,6 +2,7 @@
 // These mocks keep storage, HAP types, and Eve service wiring deterministic without requiring Homebridge or HAP-NodeJS.
 
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
