@@ -35,7 +35,7 @@
 // Eve protocol research builds on fakegato-history:
 // https://github.com/simont77/fakegato-history
 //
-// Code version 2026.09.22
+// Code version 2026.10.09
 // Mark Hulskamp
 
 // Node.js dependencies.
@@ -51,6 +51,15 @@ const EVEHOME_MAX_STREAM = 11; // Maximum number of history events we can stream
 const DAYS_OF_WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const EMPTY_SCHEDULE = 'ffffffffffffffff';
 const EVE_WATER_GUARD_ALARM_TEST_SECONDS = 180;
+// Fixed widths come from the commands consumed by each adapter. Variable Aqua records
+// are validated against their flags and nested layout in the Aqua handler.
+const EVE_TLV_PAYLOAD_SIZES = {
+  Smoke: { '40': 2 },
+  Aqua: { '2e': 2, '2f': 4, '4b': 4 },
+  'MotionBlinds': { f3: 3 },
+  'Water Guard': { '4d': 1, '4e': 1 },
+  'Light Strip': { '65': 1, '6c': 2, '6a': 2, '6b': 2 },
+};
 const HISTORY_INTERNAL_FIELDS = new Set(['time', 'type', 'sub', 'restart']);
 const EVE_LIGHT_STRIP_TRANSITIONS = Object.freeze({
   quick: Object.freeze([80, 80, 120]),
@@ -103,7 +112,102 @@ const EVE_HISTORY_FIELDS = Object.freeze({
 });
 
 /**
- * Stores bounded HomeKit service history and optionally exposes one Eve-compatible history session.
+ * @typedef {object} HistoryTarget
+ * @property {string} UUID HAP service or characteristic identifier.
+ * @property {*} [subtype=0] Exact stream identity; LeakSensor and WaterLevel use zero.
+ */
+
+/**
+ * @typedef {object} HistoryOptions
+ * @property {number} [maxEntries=16384] Non-negative integer limit; zero disables rollover.
+ */
+
+/**
+ * @typedef {object} ClimateTarget
+ * @property {number} low Lower target temperature.
+ * @property {number} high Upper target temperature.
+ */
+
+/**
+ * @typedef {object} HistorySnapshot
+ * @property {number} [time] Unix timestamp in seconds; defaults to the current time.
+ * @property {number} [restart] Unix restart timestamp; generated for the first valid entry.
+ * @property {number|boolean} [status] Service-specific activity or state value.
+ * @property {number} [position] Window position percentage.
+ * @property {number} [temperature] Temperature in Celsius.
+ * @property {ClimateTarget} [target] Climate target temperatures.
+ * @property {number} [humidity] Relative humidity percentage.
+ * @property {number} [ppm] Air quality reading.
+ * @property {number} [voc] Volatile organic compound reading.
+ * @property {number} [pressure] Air pressure reading.
+ * @property {number} [water] Water usage in litres.
+ * @property {number} [duration] Valve activity duration in seconds.
+ * @property {number} [level] Water level percentage.
+ * @property {number} [watts] Power consumption in watts.
+ * @property {number} [volts] Electrical voltage.
+ * @property {number} [amps] Electrical current.
+ */
+
+/**
+ * @typedef {HistorySnapshot & {time: number, type: string, sub: *}} HistoryRecord
+ */
+
+/**
+ * @typedef {object} EveHistoryField
+ * @property {number} tag One-byte protocol field identifier.
+ * @property {number} length Encoded payload width in bytes.
+ * @property {function(HistoryRecord): (string|undefined)} [write] Little-endian hex encoder; omitted for signature-only fields.
+ */
+
+/**
+ * @typedef {object} EveTLVCommand
+ * @property {string} command One-byte command represented as hex.
+ * @property {string} data Payload represented as hex.
+ */
+
+/**
+ * @callback EveMessageRouter
+ * @param {string} message GET or SET message name.
+ * @param {Record<string, *>} details Device-family configuration or decoded changes.
+ * @returns {Record<string, *>|null|undefined|Promise<Record<string, *>|null|undefined>} Partial GET state; SET results are ignored.
+ */
+
+/**
+ * @typedef {object} EveRouterOptions
+ * @property {EveMessageRouter} [messages] Optional owning-device configuration router.
+ */
+
+/**
+ * @typedef {object} EveHistorySession
+ * @property {object|undefined} service HAP history service.
+ * @property {object} linkedservice Original HAP service.
+ * @property {string} type History UUID represented by the adapter.
+ * @property {*} sub Normalised subtype; null includes all subtypes.
+ * @property {string} evetype Emulated Eve device family.
+ * @property {EveHistoryField[]} fields Ordered history descriptors.
+ * @property {string} signature Space-separated tag/length pairs in hex.
+ * @property {number} entry Next one-based transfer address; initially zero.
+ * @property {number} count Latest advertised number of transferable entries.
+ * @property {number} reftime Latest advertised reference time in seconds since Apple's 2001 epoch.
+ * @property {number} send Requested entry count; zero when idle or complete.
+ * @property {EveMessageRouter|undefined} messages Owning-device configuration router.
+ */
+
+/**
+ * @typedef {object} EveHistoryTransfer
+ * @property {HistoryRecord[]} history Detached entries from the requested advertisement.
+ * @property {number} reftime Reference time for this request in seconds since Apple's 2001 epoch.
+ */
+
+/**
+ * Per-accessory history storage and Eve protocol adapter for Homebridge and HAP-NodeJS.
+ *
+ * HomeKitHistory owns event validation, bounded history retention, persistence,
+ * chronological queries, CSV export, and one optional Eve-compatible history session.
+ * Accessory implementations record service snapshots through addHistory() and may
+ * link a supported service through linkToEveHome() to expose its history in Eve.
+ * An optional message router delegates Eve configuration reads and writes to the
+ * owning device.
  */
 export default class HomeKitHistory {
   static GET = 'HomeKitHistory.onEveGet'; // for EveHome read requests
@@ -131,6 +235,12 @@ export default class HomeKitHistory {
   #persistKey = undefined;
   #maxEntries = MAX_HISTORY_SIZE; // used for rolling history. if 0, means no rollover
 
+  // Transport snapshots are private so writes cannot change advertised or in-flight addresses.
+  /** @type {HistoryRecord[]} */
+  #eveHistorySnapshot = [];
+  /** @type {EveHistoryTransfer|undefined} */
+  #eveTransfer = undefined;
+
   /**
    * Resolves the HAP runtime, restores persisted history, and registers the custom Eve HAP types.
    * Construction degrades to a valid in-memory store when persistence is unavailable or malformed.
@@ -138,8 +248,7 @@ export default class HomeKitHistory {
    * @param {object} [accessory] HAP accessory that owns this history store.
    * @param {object} [api] Homebridge API or standalone HAP-NodeJS API.
    * @param {object|Function} [log] Optional partial logger.
-   * @param {object} [options] History storage options.
-   * @param {number} [options.maxEntries] Maximum retained entries; zero disables rollover.
+   * @param {HistoryOptions} [options] History storage options.
    */
   constructor(accessory = undefined, api = undefined, log = undefined, options = {}) {
     // Keep partial loggers usable; every call site already checks the individual logging method.
@@ -212,8 +321,8 @@ export default class HomeKitHistory {
       typeof historyData !== 'object' ||
       historyData === null ||
       Array.isArray(historyData) === true ||
-      typeof historyData.reset !== 'number' ||
-      typeof historyData.rollover !== 'number' ||
+      Number.isFinite(historyData.reset) === false ||
+      Number.isFinite(historyData.rollover) === false ||
       Number.isInteger(historyData.next) === false ||
       historyData.next < 0 ||
       Array.isArray(historyData.types) === false ||
@@ -222,7 +331,34 @@ export default class HomeKitHistory {
     ) {
       return false;
     }
-    return true;
+    // Array shape alone is insufficient: queries and rollover dereference each entry and type index.
+    return (
+      historyData.data.every((entry) => {
+        return (
+          typeof entry === 'object' &&
+          entry !== null &&
+          Array.isArray(entry) === false &&
+          Number.isFinite(entry.time) === true &&
+          typeof entry.type === 'string' &&
+          entry.type !== '' &&
+          entry.sub !== undefined
+        );
+      }) === true &&
+      historyData.types.every((typeEntry) => {
+        if (
+          typeof typeEntry !== 'object' ||
+          typeEntry === null ||
+          Array.isArray(typeEntry) === true ||
+          Number.isInteger(typeEntry.lastEntry) === false ||
+          typeEntry.lastEntry < 0 ||
+          typeEntry.lastEntry >= historyData.data.length
+        ) {
+          return false;
+        }
+        let entry = historyData.data[typeEntry.lastEntry];
+        return entry.type === typeEntry.type && entry.sub === typeEntry.sub;
+      }) === true
+    );
   }
 
   #readHistory() {
@@ -255,8 +391,8 @@ export default class HomeKitHistory {
    * Validates and records one service or characteristic snapshot.
    * Unsupported targets and entries missing their required shape are ignored without consuming the restart marker.
    *
-   * @param {object} target HAP Service or Characteristic whose UUID identifies the history type.
-   * @param {object} entry Snapshot values with an optional Unix timestamp in seconds.
+   * @param {HistoryTarget} target HAP Service or Characteristic whose UUID identifies the history type.
+   * @param {HistorySnapshot} entry Values required by the target profile, with optional Unix time.
    * @param {number} [timegap] Minimum seconds between records for the same UUID and subtype.
    * @returns {void}
    */
@@ -410,7 +546,6 @@ export default class HomeKitHistory {
     let restart = entry.restart;
     if (isNaN(this.restart) === false && typeof restart === 'undefined') {
       restart = this.restart;
-      this.restart = undefined;
     }
 
     let time = isNaN(entry.time) === true ? Math.floor(Date.now() / 1000) : entry.time;
@@ -452,7 +587,17 @@ export default class HomeKitHistory {
       historyEntry.restart = restart;
     }
 
-    // Call internal add entry handler
+    // Detach nested values such as climate targets before retaining caller-owned input.
+    // Uncloneable values cannot form a history snapshot; preserve the restart marker when rejecting them.
+    try {
+      historyEntry = structuredClone(historyEntry);
+    } catch (error) {
+      this?.log?.warn?.('Unable to snapshot history entry: %s', formatError(error));
+      return;
+    }
+    if (restart === this.restart && entry.restart === undefined) {
+      this.restart = undefined;
+    }
     this.#addEntry(target.UUID, subtype, time, timegap, historyEntry);
   }
 
@@ -470,6 +615,14 @@ export default class HomeKitHistory {
       types: [],
       data: [],
     };
+    // A reset explicitly discards the advertised stream as well as any in-flight transfer.
+    this.#eveHistorySnapshot = [];
+    this.#eveTransfer = undefined;
+    if (typeof this.EveHome === 'object' && this.EveHome !== null) {
+      this.EveHome.count = 0;
+      this.EveHome.send = 0;
+      this.EveHome.reftime = this.historyData.reset - EPOCH_OFFSET;
+    }
     this.#persistHistory();
   }
 
@@ -558,10 +711,10 @@ export default class HomeKitHistory {
   /**
    * Returns matching entries in chronological order.
    *
-   * @param {object|string|null} [service] HAP service instance, service UUID, or null for all service types.
+   * @param {HistoryTarget|Function|string|null} [service] HAP service instance, service UUID, or null for all service types.
    * @param {*} [subtype] Optional exact subtype filter.
-   * @param {object} [specificKey] Optional exact-match field filters.
-   * @returns {Array<object>} Detached history entry snapshots.
+   * @param {Record<string, *>} [specificKey] Optional exact-match field filters.
+   * @returns {HistoryRecord[]} Detached history entry snapshots.
    */
   getHistory(service, subtype, specificKey) {
     // Return chronologically ordered history matching the requested type, subtype, and exact field values.
@@ -583,12 +736,15 @@ export default class HomeKitHistory {
       historyFilter.sub = subtype;
     }
 
-    return this.historyData.data
-      .slice(this.historyData.next, this.historyData.data.length)
-      .concat(this.historyData.data.slice(0, this.historyData.next))
-      .filter((historyEntry) => {
-        return Object.entries(historyFilter).every(([key, value]) => historyEntry[key] === value);
-      });
+    // Clone only matching records so consumers cannot modify retained entries or their nested values.
+    return structuredClone(
+      this.historyData.data
+        .slice(this.historyData.next, this.historyData.data.length)
+        .concat(this.historyData.data.slice(0, this.historyData.next))
+        .filter((historyEntry) => {
+          return Object.entries(historyFilter).every(([key, value]) => historyEntry[key] === value);
+        }),
+    );
   }
 
   /**
@@ -638,9 +794,9 @@ export default class HomeKitHistory {
   /**
    * Returns the newest entry matching a service and optional subtype.
    *
-   * @param {object|string|null} [service] HAP service instance, service UUID, or null for all service types.
+   * @param {HistoryTarget|Function|string|null} [service] HAP service instance, service UUID, or null for all service types.
    * @param {*} [subtype] Optional exact subtype filter.
-   * @returns {object|undefined} Detached newest entry when available.
+   * @returns {HistoryRecord|undefined} Detached newest entry when available.
    */
   lastHistory(service, subtype) {
     let lastHistory = this.getHistory(service, subtype);
@@ -650,9 +806,9 @@ export default class HomeKitHistory {
   /**
    * Counts entries matching a service, optional subtype, and optional exact field filters.
    *
-   * @param {object|string|null} [service] HAP service instance, service UUID, or null for all service types.
+   * @param {HistoryTarget|Function|string|null} [service] HAP service instance, service UUID, or null for all service types.
    * @param {*} [subtype] Optional exact subtype filter.
-   * @param {object} [specificKey] Optional exact-match field filters.
+   * @param {Record<string, *>} [specificKey] Optional exact-match field filters.
    * @returns {number} Number of matching entries.
    */
   entryCount(service, subtype, specificKey) {
@@ -736,9 +892,9 @@ export default class HomeKitHistory {
    * @param {string} type History service UUID queried by this session.
    * @param {*} subtype History subtype, normalised to zero when omitted.
    * @param {string} evetype Eve product family identity used by diagnostics and configuration routing.
-   * @param {Array<object>} fields Ordered Eve history field descriptors.
-   * @param {object} options Adapter options, including an optional messages router.
-   * @returns {object} Mutable Eve session and transfer state.
+   * @param {EveHistoryField[]} fields Ordered Eve history field descriptors.
+   * @param {EveRouterOptions} options Configuration router used by the session.
+   * @returns {EveHistorySession} Mutable Eve session and transfer state.
    * @private
    */
   #createEveSession(historyService, linkedService, type, subtype, evetype, fields, options) {
@@ -776,6 +932,7 @@ export default class HomeKitHistory {
 
     // Count only records that contain at least one value supported by the selected descriptor layout.
     let history = this.#getEveHistory(type, historySubtype, historyFields);
+    this.#eveHistorySnapshot = history;
 
     // The session combines immutable adapter identity with mutable one-based transfer progress.
     let session = {
@@ -1444,7 +1601,7 @@ export default class HomeKitHistory {
    *
    * @param {string} value Base64-encoded HomeKit characteristic value.
    * @param {string} deviceName Device family used in diagnostics.
-   * @returns {Array<{command: string, data: string}>} Valid command payloads in wire order.
+   * @returns {EveTLVCommand[]} Valid command payloads in wire order.
    * @private
    */
   #decodeEveTLVCommands(value, deviceName) {
@@ -1478,7 +1635,14 @@ export default class HomeKitHistory {
         break;
       }
 
-      commands.push({ command, data: valHex.slice(payloadStart, payloadEnd) });
+      let expectedSize = EVE_TLV_PAYLOAD_SIZES[deviceName]?.[command];
+      if (expectedSize !== undefined && byteLength !== expectedSize) {
+        // A framed record may still be too short for its command's numeric reads.
+        // Its boundary is known, so reject this record and continue with the next TLV.
+        this?.log?.warn?.('Invalid Eve %s command "%s" payload length', deviceName, command);
+      } else {
+        commands.push({ command, data: valHex.slice(payloadStart, payloadEnd) });
+      }
 
       // Advance directly to the next command header, including zero-length payloads.
       index = payloadEnd;
@@ -1544,10 +1708,22 @@ export default class HomeKitHistory {
     // Logging before parsing keeps captures usable even when an unknown command desynchronises the decoder.
     this?.log?.debug?.('Eve Thermo ProgramCommand "%s"', valHex);
 
+    if (typeof valHex !== 'string') {
+      return;
+    }
+    // Thermo uses opcode-specific widths rather than TLV8 lengths.
+    let payloadSizes = {
+      '11': 2, '12': 1, '13': 1, '14': 1, '18': 1, '19': 2,
+      f4: 3, fc: 5, fa: 56, '1a': 8, f2: 2, f6: 3, ff: 2,
+    };
     let index = 0;
     while (index < valHex.length) {
       let command = valHex.slice(index, index + 2);
       index += 2; // skip over command value, and this is where data starts.
+      if (payloadSizes[command] !== undefined && index + payloadSizes[command] * 2 > valHex.length) {
+        this?.log?.warn?.('Truncated Eve Thermo command "%s"', command);
+        break;
+      }
       switch (command) {
         case '00': {
           // start of command string ??
@@ -1642,6 +1818,12 @@ export default class HomeKitHistory {
         }
 
         case 'fa': {
+          // Weekly program slots require the temperature levels from the same command packet.
+          if (processedData.scheduleTemps === undefined) {
+            this?.log?.warn?.('Eve Thermo programs missing temperature levels');
+            index += 112;
+            break;
+          }
           // Programs (week - mon, tue, wed, thu, fri, sat, sun)
           // index += 112;
           for (let index2 = 0; index2 < 7; index2++) {
@@ -1788,7 +1970,19 @@ export default class HomeKitHistory {
 
         case '44': {
           // Schedules on/off and Timezone/location information
+          if (data.length < 6) {
+            this?.log?.warn?.('Invalid Eve Aqua location command');
+            break;
+          }
           let subCommand = EveHexStringToNumber(data.slice(2, 6));
+          // Validate all flag-dependent values before mutating any retained configuration.
+          if (
+            ((subCommand & 0x10) === 0x10 && data.length < 18) ||
+            ((subCommand & 0x04) === 0x04 && data.length < 34)
+          ) {
+            this?.log?.warn?.('Incomplete Eve Aqua location command');
+            break;
+          }
           this.EveAquaPersist.enableschedule = (subCommand & 0x01) === 0x01; // Flag 0x01 is schedule status on/off
           if ((subCommand & 0x10) === 0x10) {
             this.EveAquaPersist.utcoffset = EveHexStringToNumber(data.slice(10, 18)) * 60; // Flag 0x10 includes UTC offset in minutes
@@ -1812,6 +2006,10 @@ export default class HomeKitHistory {
         }
 
         case '45': {
+          if (data.length < 14) {
+            this?.log?.warn?.('Invalid Eve Aqua schedule command');
+            break;
+          }
           // Eve App Scheduling Programs
           let index2 = 14; // Program schedules start at offset 14 in data
           programs = [];
@@ -1913,6 +2111,10 @@ export default class HomeKitHistory {
         }
 
         case '46': {
+          if (data.length < 14) {
+            this?.log?.warn?.('Invalid Eve Aqua schedule days command');
+            break;
+          }
           // Eve App active days across programs
           // Three-bit values map each weekday to an Eve program identifier.
           let daysbitmask = EveHexStringToNumber(data.slice(8, 14)) >>> 4;
@@ -2154,12 +2356,12 @@ export default class HomeKitHistory {
     }
 
     try {
-      // Pass a new top-level object so a router cannot mutate active state before its result is validated.
-      let updatedState = await this.EveHome.messages(HomeKitHistory.GET, { ...currentState });
+      // Detach nested schedules too: a failed or invalid router response must preserve retained state.
+      let updatedState = await this.EveHome.messages(HomeKitHistory.GET, structuredClone(currentState));
       if (typeof updatedState !== 'object' || updatedState === null || Array.isArray(updatedState) === true) {
         return currentState;
       }
-      return { ...currentState, ...updatedState };
+      return structuredClone({ ...currentState, ...updatedState });
     } catch (error) {
       this?.log?.warn?.('Unable to refresh Eve details: %s', formatError(error));
       return currentState;
@@ -2504,6 +2706,7 @@ export default class HomeKitHistory {
     let historyTime = tempHistory.length === 0 ? Math.floor(Date.now() / 1000) : tempHistory[tempHistory.length - 1].time;
     this.EveHome.reftime = tempHistory.length === 0 ? this.historyData.reset - EPOCH_OFFSET : tempHistory[0].time - EPOCH_OFFSET;
     this.EveHome.count = tempHistory.length; // Number of history entries for this type
+    this.#eveHistorySnapshot = tempHistory;
 
     let value = util.format(
       '%s 00000000 %s %s %s %s %s %s 000000000101',
@@ -2522,14 +2725,16 @@ export default class HomeKitHistory {
   #EveHistoryEntries() {
     // Streams our history data back to EveHome when requested
     let dataStream = '';
-    if (this.EveHome.entry <= this.EveHome.count && this.EveHome.send !== 0) {
-      let tempHistory = this.#getEveHistory(this.EveHome.type, this.EveHome.sub, this.EveHome.fields);
+    if (this.#eveTransfer !== undefined && this.EveHome.entry <= this.#eveTransfer.history.length && this.EveHome.send > 0) {
+      // Keep one request stable across writes, rollover, and subsequent status reads.
+      let tempHistory = this.#eveTransfer.history;
+      let reftime = this.#eveTransfer.reftime;
 
       // Generate eve home history header for data following
       let data = util.format(
         '%s 0100 0000 81 %s 0000 0000 00 0000',
         numberToEveHexString(this.EveHome.entry, 8),
-        numberToEveHexString(this.EveHome.reftime, 8),
+        numberToEveHexString(reftime, 8),
       );
 
       // Format the data string, including calculating the number of 'bytes' the data fits into
@@ -2537,12 +2742,12 @@ export default class HomeKitHistory {
       dataStream += util.format('%s %s', (data.length / 2 + 1).toString(16), data);
 
       for (let i = 0; i < EVEHOME_MAX_STREAM; i++) {
-        if (tempHistory.length !== 0 && this.EveHome.entry - 1 <= tempHistory.length) {
+        if (this.EveHome.entry >= 1 && this.EveHome.entry - 1 < tempHistory.length) {
           let historyEntry = tempHistory[this.EveHome.entry - 1]; // map EveHome address to our history, as EvenHome addresses start at 1
           let data = util.format(
             '%s %s %s',
             numberToEveHexString(this.EveHome.entry, 8),
-            numberToEveHexString(historyEntry.time - this.EveHome.reftime - EPOCH_OFFSET, 8),
+            numberToEveHexString(historyEntry.time - reftime - EPOCH_OFFSET, 8),
             this.#encodeEveFields(historyEntry, this.EveHome.fields),
           ); // Create the common header data for eve entry
 
@@ -2551,38 +2756,48 @@ export default class HomeKitHistory {
           dataStream += util.format('%s%s', numberToEveHexString(data.length / 2 + 1, 2), data);
 
           this.EveHome.entry++;
-          if (this.EveHome.entry > this.EveHome.count) {
+          if (this.EveHome.entry > tempHistory.length) {
             break;
           }
         }
       }
-      if (this.EveHome.entry > this.EveHome.count) {
+      if (this.EveHome.entry > tempHistory.length) {
         // No more history data to send back
         this.EveHome.send = 0; // no more to send
+        this.#eveTransfer = undefined;
         dataStream += '00';
       }
     } else {
       // We're not transferring any data back
       this.EveHome.send = 0; // no more to send
+      this.#eveTransfer = undefined;
       dataStream = '00';
     }
     return encodeEveData(dataStream);
   }
 
   #EveHistoryRequest(value) {
-    // Requesting history, starting at specific entry
-    this.EveHome.entry = EveHexStringToNumber(decodeEveData(value).substring(4, 12)); // Starting entry
-    if (this.EveHome.entry === 0) {
-      this.EveHome.entry = 1; // requested to restart from beginning of history for sending to EveHome
+    let decoded = decodeEveData(value);
+    // Requests contain two prefix bytes followed by a four-byte, unsigned entry address.
+    if (typeof decoded !== 'string' || decoded.length < 12) {
+      this?.log?.warn?.('Invalid Eve history request');
+      return;
     }
-    this.EveHome.send = this.EveHome.count - this.EveHome.entry + 1; // Number of entries we're expected to send
+    let requestedEntry = Buffer.from(decoded.slice(4, 12), 'hex').readUInt32LE(0);
+    this.EveHome.entry = requestedEntry === 0 ? 1 : requestedEntry;
+    this.#eveTransfer = { history: this.#eveHistorySnapshot, reftime: this.EveHome.reftime };
+    this.EveHome.send = Math.max(0, this.#eveTransfer.history.length - this.EveHome.entry + 1);
     this?.log?.debug?.('#EveHistoryRequest: requested address', this.EveHome.entry);
   }
 
   #EveSetTime(value) {
-    // Time stamp from EveHome
-    let timestamp = EPOCH_OFFSET + EveHexStringToNumber(decodeEveData(value));
-
+    let decoded = decodeEveData(value);
+    // Eve's clock value is exactly four bytes; reject incomplete values before numeric decoding.
+    if (typeof decoded !== 'string' || decoded.length !== 8) {
+      this?.log?.warn?.('Invalid Eve time value');
+      return;
+    }
+    let timestamp = EPOCH_OFFSET + EveHexStringToNumber(decoded);
     this?.log?.debug?.('#EveSetTime: timestamp offset', new Date(timestamp * 1000));
   }
 

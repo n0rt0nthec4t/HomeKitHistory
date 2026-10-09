@@ -6,7 +6,8 @@
 accessory, converts supported service events into a small persisted schema, and optionally projects one history stream through
 Eve's proprietary HAP characteristics.
 
-**Version:** 2026.09.22  
+**Version:** 2026.10.09
+
 **Primary module:** `HomeKitHistory.js`  
 **Consumers:** `HomeKitDevice`, Homebridge accessory implementations, and standalone HAP-NodeJS accessories
 
@@ -109,8 +110,9 @@ The persisted object has this shape:
 - `types` — latest-entry index for each UUID/subtype pair; used by time-gap checks.
 - `data` — bounded event array.
 
-The startup validator requires numeric timestamps, a non-negative integer `next`, array-backed `types` and `data`, and a write
-pointer inside the current data bounds. A rejected structure is not partially repaired; it is replaced by the known empty schema.
+The startup validator requires finite numeric timestamps, a non-negative integer `next`, array-backed `types` and `data`, and a
+write pointer inside the current data bounds. Every record must have a finite timestamp, UUID, and subtype; type indexes must
+point at an existing record with matching UUID and subtype. A rejected structure is replaced by the known empty schema.
 
 ### Entry Identity
 
@@ -161,8 +163,9 @@ write data[next], advance next, update types, persist
 Per-service metadata is the authoritative definition of required, optional, and defaulted fields. Entry filtering prevents caller
 objects from injecting internal `time`, `type`, or `sub` metadata and keeps persisted records predictable.
 
-Generated timestamps, restart markers, defaults, and normalised subtypes are applied only to the stored record. Caller-owned target
-and entry objects are not mutated.
+Generated timestamps, restart markers, defaults, and normalised subtypes are applied only to the stored record. Nested values are
+cloned before retention, so later caller mutations cannot change history. Uncloneable snapshots are rejected without consuming
+the restart marker.
 
 ## Ring Buffer and Ordering
 
@@ -198,7 +201,7 @@ during rollover.
 - `specificKey` contributes additional exact field matches.
 
 The caller's filter object is cloned before type/subtype criteria are added. `lastHistory()` and `entryCount()` are small wrappers
-over this one query path so filtering and rollover ordering remain consistent.
+over this one query path so filtering and rollover ordering remain consistent. Matching records are deeply cloned before return.
 
 ## Persistence Boundary
 
@@ -279,6 +282,11 @@ Eve app reads History Entries repeatedly
 encode at most 11 records per response until complete
 ```
 
+Status reads retain a detached snapshot of the advertised entries. Each request retains that snapshot and its reference time
+until completion, so writes, rollover, and later status reads cannot change an active transfer. Resetting history cancels both
+the advertisement and the active transfer. Command handlers validate fixed widths and flag-dependent payload lengths before
+decoding numeric values.
+
 Unix timestamps are translated with the 978,307,200-second offset between 1970-01-01 and Apple's 2001-01-01 epoch.
 
 ### Configuration Routing
@@ -288,8 +296,9 @@ Thermo, Light Strip, Smoke, Aqua, Energy, and Water Guard adapters hold Eve-spec
 - a `HomeKitHistory.GET` message lets the owning device return a full or partial state update before a characteristic read;
 - a `HomeKitHistory.SET` message reports decoded changes made in the Eve app.
 
-All GET requests pass through `#refreshEveDetails()`. It gives the router a shallow copy, accepts only a non-array object result,
-and merges that result over the adapter's existing defaults. Invalid results or router failures preserve the last valid state.
+All GET requests pass through `#refreshEveDetails()`. It gives the router a deep copy, accepts only a non-array object result,
+and clones the merged result over the adapter's existing defaults. Invalid or uncloneable results and router failures preserve
+the last valid state, including nested schedules.
 `#getEveDetails()` then uses the session's `evetype` to route the refreshed state to the matching packet encoder or scalar reader.
 The family functions contain only their distinct wire-format logic.
 

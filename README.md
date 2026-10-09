@@ -96,6 +96,7 @@ history.addHistory(temperatureService, {
 - `entry.time` defaults to the current Unix timestamp in seconds.
 - a missing service subtype is normalised to `0`.
 - unknown entry fields are discarded.
+- nested values are copied before storage; snapshots containing uncloneable values are ignored.
 - the first valid entry after process start receives a `restart` timestamp.
 - `timegap` suppresses a new entry when the previous entry for the same UUID/subtype is too recent. Restart entries are never
   suppressed.
@@ -135,7 +136,7 @@ let detectedOnly = history.getHistory(motionService, undefined, { status: 1 });
 
 `service` may be a UUID string, a HAP service type, or a service instance. When a service instance is supplied and `subtype` is
 omitted, its subtype is inferred. Pass `null` explicitly to include every subtype. `specificKey` is an exact-match field filter and
-is not mutated.
+is not mutated. Returned records and nested values are detached snapshots; changing them does not alter retained history.
 
 ### `lastHistory(service, subtype?)`
 
@@ -147,7 +148,7 @@ Returns the number of matching entries.
 
 ### `resetHistory()`
 
-Clears all history, resets ring-buffer metadata, and immediately persists the empty store.
+Clears all history, resets ring-buffer metadata, cancels any active Eve transfer, and immediately persists the empty store.
 
 ### `rolloverHistory()`
 

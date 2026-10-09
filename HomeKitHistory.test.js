@@ -1107,3 +1107,193 @@ test('message constants and Eve options marker are stable public API', () => {
   assert.equal(HomeKitHistory.SET, 'HomeKitHistory.onEveSet');
   assert.equal(typeof HomeKitHistory.EVE_OPTIONS, 'symbol');
 });
+
+test('history input and query snapshots isolate nested values from retained and persisted records', () => {
+  let { hap, history, storage } = createHistory();
+  let thermostat = new hap.Service.Thermostat('Thermostat', 1);
+  let target = { low: 0, high: 22 };
+  history.addHistory(thermostat, { time: 100, status: 2, temperature: 20, humidity: 45, target });
+  target.high = 99;
+  let queried = history.getHistory(thermostat);
+  queried[0].status = 0;
+  queried[0].target.high = 80;
+  history.lastHistory(thermostat).target.low = 10;
+  assert.equal(history.lastHistory(thermostat).status, 2);
+  assert.deepEqual(history.lastHistory(thermostat).target, { low: 0, high: 22 });
+  assert.deepEqual(storage.writes.at(-1).value.data[0].target, { low: 0, high: 22 });
+  history.addHistory(thermostat, { time: 200, status: 0, temperature: 21, humidity: 50, target });
+  assert.deepEqual(storage.writes.at(-1).value.data[0].target, { low: 0, high: 22 });
+});
+
+test('uncloneable history input preserves the restart marker and allows later valid writes', () => {
+  let { hap, history } = createHistory();
+  let thermostat = new hap.Service.Thermostat('Thermostat', 1);
+  let restart = history.restart;
+  history.addHistory(thermostat, { status: 2, temperature: 20, humidity: 40, target: { high: () => 22 } });
+  assert.equal(history.entryCount(), 0);
+  assert.equal(history.restart, restart);
+  history.addHistory(thermostat, { status: 2, temperature: 20, humidity: 40, target: { low: 0, high: 22 } });
+  assert.equal(history.lastHistory(thermostat).restart, restart);
+});
+
+test('persisted entries and indexes are validated before querying, rollover, or timegap checks', () => {
+  let valid = {
+    reset: 100, rollover: 0, next: 1,
+    types: [{ type: 'service-motion', sub: 1, lastEntry: 0 }],
+    data: [{ time: 100, type: 'service-motion', sub: 1, status: 1 }],
+  };
+  let malformed = [
+    { ...valid, data: [null] },
+    { ...valid, data: [5] },
+    { ...valid, data: [{ ...valid.data[0], time: Infinity }] },
+    { ...valid, data: [{ time: 100, sub: 1 }] },
+    { ...valid, types: [null] },
+    { ...valid, types: [{ ...valid.types[0], lastEntry: -1 }] },
+    { ...valid, types: [{ ...valid.types[0], lastEntry: 1 }] },
+    { ...valid, types: [{ ...valid.types[0], sub: 2 }] },
+    { ...valid, reset: NaN },
+  ];
+  for (let persisted of malformed) {
+    let storage = new MockStorage({ 'History.ACCESSORY-01.json': persisted });
+    let { history, hap } = createHistory({ storage, maxEntries: 1 });
+    assert.deepEqual(history.getHistory('service-motion'), []);
+    assert.equal(storage.writes.length, 1);
+    let motion = new hap.Service.MotionSensor('Motion', 1);
+    history.addHistory(motion, { time: 200, status: 0 }, 60);
+    history.addHistory(motion, { time: 300, status: 1 }, 60);
+    assert.equal(history.lastHistory(motion).status, 1);
+  }
+});
+
+test('short history requests and clock values leave active transfer state intact', async () => {
+  let { history, hap, accessory } = createHistory();
+  let service = new hap.Service.Switch('Switch', 1);
+  accessory.services.push(service);
+  history.addHistory(service, { time: 1000000000, status: 1 });
+  let eveService = await history.linkToEveHome(service);
+  let request = eveService.getCharacteristic(hap.Characteristic.EveHistoryRequest).setHandler;
+  let setTime = eveService.getCharacteristic(hap.Characteristic.EveSetTime).setHandler;
+  request(Buffer.from('000001000000', 'hex').toString('base64'));
+  for (let value of [undefined, null, '', 'AA==', Buffer.alloc(5).toString('base64')]) {
+    assert.doesNotThrow(() => request(value));
+    assert.doesNotThrow(() => setTime(value));
+    assert.equal(history.EveHome.entry, 1);
+    assert.equal(history.EveHome.send, 1);
+  }
+  assert.doesNotThrow(() => setTime(Buffer.from('01000000', 'hex').toString('base64')));
+  request(Buffer.from('0000ffffffff', 'hex').toString('base64'));
+  assert.equal(history.EveHome.send, 0);
+  assert.equal(eveService.getCharacteristic(hap.Characteristic.EveHistoryEntries).getHandler(), 'AA==');
+});
+
+test('malformed configuration payloads are ignored while following valid commands still apply', async () => {
+  let setup = createHistory();
+  let valve = new setup.hap.Service.Valve('Valve', 1);
+  setup.accessory.services.push(valve);
+  let writes = [];
+  await setup.history.linkToEveHome(valve, {
+    messages(type, state) {
+      if (type === HomeKitHistory.SET) {
+        writes.push(state);
+      }
+      return state;
+    },
+  });
+  let set = valve.getCharacteristic(setup.hap.Characteristic.EveSetConfiguration).setHandler;
+  let baseline = structuredClone(setup.history.EveAquaPersist);
+  for (let packet of ['2e00', '2e0101', '2e0700000000000000', '2f00', '4400', '4403051400', '4500', '4600', '4b00']) {
+    await assert.doesNotReject(() => set(Buffer.from(packet, 'hex').toString('base64')));
+    assert.deepEqual(setup.history.EveAquaPersist, baseline);
+    assert.deepEqual(writes, []);
+  }
+  await set(Buffer.from('2e002e02e803', 'hex').toString('base64'));
+  assert.equal(setup.history.EveAquaPersist.flowrate, 60);
+  assert.deepEqual(writes, [{ flowrate: 60 }]);
+
+  let smokeSetup = createHistory();
+  let smoke = new smokeSetup.hap.Service.SmokeSensor('Smoke', 1);
+  smokeSetup.accessory.services.push(smoke);
+  await smokeSetup.history.linkToEveHome(smoke);
+  let smokeSet = smoke.getCharacteristic(smokeSetup.hap.Characteristic.EveSetConfiguration).setHandler;
+  let alarmtest = smokeSetup.history.EveSmokePersist.alarmtest;
+  await smokeSet(Buffer.from('4000400102', 'hex').toString('base64'));
+  assert.equal(smokeSetup.history.EveSmokePersist.alarmtest, alarmtest);
+
+  let thermoSetup = createHistory();
+  let thermostat = new thermoSetup.hap.Service.Thermostat('Thermostat', 1);
+  thermoSetup.accessory.services.push(thermostat);
+  await thermoSetup.history.linkToEveHome(thermostat);
+  let thermoSet = thermostat.getCharacteristic(thermoSetup.hap.Characteristic.EveProgramCommand).setHandler;
+  let thermoBaseline = structuredClone(thermoSetup.history.EveThermoPersist);
+  for (let value of [undefined, null, Buffer.from('12', 'hex').toString('base64'), Buffer.from('fa', 'hex').toString('base64')]) {
+    await assert.doesNotReject(() => thermoSet(value));
+    assert.deepEqual(thermoSetup.history.EveThermoPersist, thermoBaseline);
+  }
+});
+
+test('Eve router failures and invalid results preserve nested schedules and accepted results are detached', async () => {
+  let setup = createHistory();
+  let thermostat = new setup.hap.Service.Thermostat('Thermostat', 1);
+  setup.accessory.services.push(thermostat);
+  let programs = [{ days: 'mon', schedule: [{ start: 3600, duration: 600, ecotemp: 16, comforttemp: 20 }] }];
+  let response = null;
+  await setup.history.linkToEveHome(thermostat, {
+    EveThermo_programs: programs,
+    messages(type, state) {
+      state.programs[0].schedule[0].start = 7200;
+      if (response === undefined) {
+        throw new Error('device unavailable');
+      }
+      return response;
+    },
+  });
+  let get = thermostat.getCharacteristic(setup.hap.Characteristic.EveProgramData).getHandler;
+  assert.equal(setup.history.EveThermoPersist.programs[0].schedule[0].start, 3600);
+  response = undefined;
+  await get();
+  assert.equal(setup.history.EveThermoPersist.programs[0].schedule[0].start, 3600);
+  response = { programs: structuredClone(programs) };
+  response.programs[0].schedule[0].start = 10800;
+  await get();
+  response.programs[0].schedule[0].start = 14400;
+  assert.equal(setup.history.EveThermoPersist.programs[0].schedule[0].start, 10800);
+  response = { programs: structuredClone(programs), unsupported: () => true };
+  await get();
+  assert.equal(setup.history.EveThermoPersist.programs[0].schedule[0].start, 10800);
+});
+
+test('history transfers keep advertised entries across rollover and status reads, and reset cancels them', async () => {
+  let { history, hap, accessory } = createHistory({ maxEntries: 16 });
+  let service = new hap.Service.Switch('Switch', 1);
+  accessory.services.push(service);
+  for (let index = 0; index < 13; index++) {
+    history.addHistory(service, { time: 1000000000 + index, status: index % 2 });
+  }
+  let eveService = await history.linkToEveHome(service);
+  let getStatus = eveService.getCharacteristic(hap.Characteristic.EveHistoryStatus).getHandler;
+  let getEntries = eveService.getCharacteristic(hap.Characteristic.EveHistoryEntries).getHandler;
+  let request = eveService.getCharacteristic(hap.Characteristic.EveHistoryRequest).setHandler;
+  getStatus();
+  request(Buffer.from('000001000000', 'hex').toString('base64'));
+  getEntries();
+  assert.equal(history.EveHome.entry, 12);
+  for (let index = 13; index < 32; index++) {
+    history.addHistory(service, { time: 1000000000 + index, status: index % 2 });
+  }
+  getStatus();
+  let tail = Buffer.from(getEntries(), 'base64').toString('hex');
+  // Original entry addresses, offsets and statuses survive the live buffer being completely overwritten.
+  assert.equal(tail.includes('0b0c0000000b0000000101'), true);
+  assert.equal(tail.includes('0b0d0000000c0000000100'), true);
+  assert.equal(tail.endsWith('00'), true);
+  assert.equal(history.EveHome.send, 0);
+  assert.equal(getEntries(), 'AA==');
+  request(Buffer.from('000001000000', 'hex').toString('base64'));
+  history.resetHistory();
+  history.addHistory(service, { time: 1000000040, status: 1 });
+  assert.equal(getEntries(), 'AA==');
+  assert.equal(history.EveHome.send, 0);
+  getStatus();
+  request(Buffer.from('000001000000', 'hex').toString('base64'));
+  assert.equal(Buffer.from(getEntries(), 'base64').toString('hex').includes('0b01000000000000000101'), true);
+});

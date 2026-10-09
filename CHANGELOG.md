@@ -2,6 +2,20 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2026.10.09
+
+### Fixed
+
+- History writes detach nested caller values, and queries return detached snapshots.
+- Startup validation rejects malformed stored entries and mismatched type indexes before history processing.
+- Eve configuration, history-request, and clock handlers reject incomplete payloads before numeric decoding.
+- Eve configuration refreshes isolate nested schedules and detach accepted router responses.
+- Eve transfers retain the advertised entries and reference time across writes and rollover; resetting history cancels transfers.
+
+### Changed
+
+- Added reusable JSDoc contracts for history snapshots, options, Eve descriptors, routers, and transfer state.
+
 ## 2026/09/22
 
 ### Added
