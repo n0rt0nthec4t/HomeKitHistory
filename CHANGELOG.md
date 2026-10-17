@@ -2,6 +2,52 @@
 
 All notable changes to the `HomeKitHistory` module are documented in this file.
 
+## 2026.10.18
+
+### Fixed
+
+- Initial Thermo and Aqua options now use the same detached validation and encoding boundary as GET updates; invalid initial
+  configuration logs a warning and retains family defaults, including when no GET router is supplied.
+- Overlapping Eve GET responses now merge and commit against the latest retained state without an intervening await. Failed or
+  ignored reads no longer restore an older snapshot; unrelated changes from concurrent reads and SETs are preserved.
+- Light Strip preset lookups now reject inherited property names, preventing malformed timing packets and transition-write failures.
+- Eve GET refreshes validate known scalar types and nested schedules and encode candidates before committing them; malformed
+  responses and formatter failures preserve the previous configuration.
+- Aqua history and usage totals now encode unsigned 64-bit millilitres, skipping invalid or overflowing contributions while
+  preserving raw records and fractional aggregation. A1 and A6 regressions now pass as ordinary tests.
+- `addHistory()` now returns whether an entry was retained, so rejected and time-gap-suppressed entries do not trigger
+  `HomeKitDevice` history hooks. Persistence failures remain logged while accepted entries stay available in memory.
+- Corrected the Fan v2 HAP lookup that could throw for every history write, and rejected inherited metadata keys as targets.
+- History timestamps and gaps now require finite numbers; invalid timestamps use the current time and invalid gaps use zero.
+- LeakSensor and WaterLevel service-instance queries now match their normalised stored subtype.
+- Startup repairs incomplete or stale matching indexes and retains the newest records when the configured history limit shrinks.
+- Corrected Smoke option booleans, Aqua child-lock constant lookup, and Thermo history's low-only target temperature.
+- Eve refreshes now target only the linked service and include Water Guard configuration updates.
+- Water Guard alarm-test restarts and explicit ends now cancel the previous timer, preventing early expiry and delayed state changes.
+- Aqua schedule writes no longer forward incomplete lists or unknown time markers; empty program slots retain their weekday IDs
+  through decoding and configuration reads.
+- Aqua schedule writes now reject missing or extra program slots relative to the declared count, including the reserved default slot.
+- Scaled Eve history fields now check their signed or unsigned wire limits after rounding, omitting overflow values instead of
+  throwing or truncating them; raw history records are preserved.
+- ESLint now uses the `globals` module's Node.js built-ins, matching HomeKitDevice's ES module configuration.
+- Inactive history instances now reject recording and Eve linking when construction lacked a HAP runtime or accessory identity.
+
+### Changed
+
+- Inlined the single-use Eve signature transformation and Energy reading selection at their call sites.
+- Removed abandoned decoder fragments and simplified callback returns, schedule assembly, metadata reads, and redundant numeric
+  checks without changing the public API or captured protocol layouts.
+- Water Guard SET handling now keeps its alarm-test timer local to the adapter callback, removing the class field and separate
+  setter method while preserving restart and cancellation behaviour.
+- Simplified history insertion with early suppression returns, one record construction, and replacement of only the changed
+  type-index entry while preserving prior snapshots and persistence behaviour.
+- Simplified boolean assignments, history predicates, and type-index matching without changing their accepted input contracts.
+- Eve sessions now use their private adapters' fixed descriptors directly, removing redundant runtime validation and array copying.
+- Simplified Aqua schedule decoding with unsigned little-endian Buffer reads, ordinary offset arithmetic, and concise protocol comments.
+- Inlined Thermo target selection into its field descriptor and removed the single-use helper while preserving target validation.
+- Combined identical Eve refresh cases, removed redundant getter and string wrappers, and converted unused metadata properties
+  into code comments. Expanded public API, profile, protocol callback, and failure-path tests with measured coverage thresholds.
+
 ## 2026.10.09
 
 ### Fixed
@@ -147,8 +193,8 @@ All notable changes to the `HomeKitHistory` module are documented in this file.
 
 - **Replaced `switch` with flat `if` blocks** in `addHistory()`:
   - Maintains all original inline documentation and per-service logic.
-- **Centralized shared logic** at the top of `addHistory()`:
-  - Normalizes `entry.time`, `entry.restart`, `service.subtype`, and `timegap`.
+- **Centralised shared logic** at the top of `addHistory()`:
+  - Normalises `entry.time`, `entry.restart`, `service.subtype`, and `timegap`.
 - **Improved clarity and safety in `#addEntry()`**:
   - Explicit `entryIndex` used before incrementing `.next`.
   - Refactored type lookup logic and field assignments with consistent structure.

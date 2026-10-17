@@ -6,8 +6,7 @@
 accessory, converts supported service events into a small persisted schema, and optionally projects one history stream through
 Eve's proprietary HAP characteristics.
 
-**Version:** 2026.10.09
-
+**Version:** 2026.10.18
 **Primary module:** `HomeKitHistory.js`  
 **Consumers:** `HomeKitDevice`, Homebridge accessory implementations, and standalone HAP-NodeJS accessories
 
@@ -128,6 +127,8 @@ accessory history store without mixing their last-entry metadata.
 ## Write Flow
 
 `addHistory(target, entry, timegap)` is the only public event-write path.
+It returns `true` for an entry retained in memory, including when persistence fails, and `false` for rejection or time-gap
+suppression. Persistence failures are reported through the logger without discarding the in-memory entry.
 
 ```text
 validate target, entry, and HAP capabilities
@@ -190,6 +191,8 @@ chronological query: [old-2, new-3, new-4]
 
 The `types` index always points at the latest physical entry for each UUID/subtype pair and is rebuilt from the complete data array
 during rollover.
+Startup repairs incomplete or stale matching indexes using logical ring order. When a configured limit is reduced, startup
+retains the newest records in that order before restarting bounded writes at zero.
 
 ## Query Boundary
 
@@ -199,6 +202,8 @@ during rollover.
 - a service instance selects its UUID and, when no subtype argument is provided, its subtype;
 - explicit `null` subtype removes subtype filtering;
 - `specificKey` contributes additional exact field matches.
+
+LeakSensor and WaterLevel queries use subtype zero to match their insertion identities.
 
 The caller's filter object is cloned before type/subtype criteria are added. `lastHistory()` and `entryCount()` are small wrappers
 over this one query path so filtering and rollover ordering remain consistent. Matching records are deeply cloned before return.
@@ -255,7 +260,7 @@ requests across linked services.
 `evetype` is stable semantic identity used by `HomeKitDevice` setup reporting and device-specific configuration. History-entry
 encoding does not branch on that value. Instead, each field descriptor supplies an Eve tag, encoded byte length, source-value
 lookup, conversion, and binary writer. Descriptor order determines both the advertised signature and each field's bit in the
-per-entry mask. A session accepts at most seven descriptors, matching the supported Eve field bitmap. Records without any
+per-entry mask. Private adapters supply fixed layouts of at most seven descriptors, matching the supported Eve field bitmap. Records without any
 encodable fields are excluded consistently from the advertised count and transfer address space. Device-specific configuration
 reads still route by `evetype`, as described below.
 
@@ -296,11 +301,20 @@ Thermo, Light Strip, Smoke, Aqua, Energy, and Water Guard adapters hold Eve-spec
 - a `HomeKitHistory.GET` message lets the owning device return a full or partial state update before a characteristic read;
 - a `HomeKitHistory.SET` message reports decoded changes made in the Eve app.
 
-All GET requests pass through `#refreshEveDetails()`. It gives the router a deep copy, accepts only a non-array object result,
-and clones the merged result over the adapter's existing defaults. Invalid or uncloneable results and router failures preserve
-the last valid state, including nested schedules.
-`#getEveDetails()` then uses the session's `evetype` to route the refreshed state to the matching packet encoder or scalar reader.
-The family functions contain only their distinct wire-format logic.
+All GET requests pass through `#refreshEveDetails()`. It gives the router a deep copy and accepts only a non-array object
+result. After the router resolves, it merges the response with the latest retained configuration, validates and encodes the
+candidate through `#encodeEveDetails()`, and commits it without another await. Concurrent partial updates therefore preserve
+unrelated fields; when responses supply the same field, the last successfully completed response wins. Failed, ignored, or
+uncloneable responses encode the latest usable state without replacing it.
+
+`#getEveDetails()` selects the family state property and formatter. Initial Thermo/Aqua options also use `#encodeEveDetails()`
+so nested schedules detach even without a GET router. Invalid initial options retain family defaults and emit a warning. Known
+scalar types, UINT16 firmware builds, nested schedules, and Light Strip preset names are validated before candidates are committed.
+The family functions contain their distinct wire-format logic.
+
+Aqua history and total usage share unsigned 64-bit millilitre validation. Invalid samples and contributions that would
+overflow the total are skipped without changing raw history. Totals sum valid litres before scaling, preserving fractional
+millilitres across samples; individual history fields floor each sample separately.
 
 This is a narrow dependency-inversion boundary: `HomeKitHistory` understands Eve packets but does not directly control the physical
 device or own its durable device configuration.
