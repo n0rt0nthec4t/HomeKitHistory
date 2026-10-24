@@ -2157,7 +2157,9 @@ test('multiple accessories share registered Eve HAP types while keeping their hi
   assert.equal(storage.getItem('History.SECOND.json').data[0].status, 0);
 });
 
-test('A1: malformed schedules reject the whole GET update and later valid reads recover', async () => {
+test('A1: malformed schedules reject the whole GET update and later valid reads recover', async (context) => {
+  // Eve configuration includes the current second; compare updates at one instant.
+  context.mock.timers.enable({ apis: ['Date'], now: 1792800000000 });
   for (let family of ['Thermo', 'Aqua']) {
     let warnings = [];
     let { history, hap } = createHistory({ log: { warn(...args) {
